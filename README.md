@@ -1,7 +1,7 @@
 Quip
 ===
 
-Quip is a lightweight fork of the Kilo editor that maintains no reliance on libraries but adds additional modern features.
+Quip is a lightweight fork of the Kilo editor that maintains no reliance on libraries, but adds additional modern features.
 
 Usage: quip `<filename>`
 
