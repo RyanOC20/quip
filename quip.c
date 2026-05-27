@@ -117,6 +117,7 @@ enum KEY_ACTION{
         CTRL_S = 19,        /* Ctrl-s */
         CTRL_U = 21,        /* Ctrl-u */
         ESC = 27,           /* Escape */
+        CTRL_SLASH = 31,    /* Ctrl-/ */
         BACKSPACE =  127,   /* Backspace */
         /* The following are just soft codes, not really reported by the
          * terminal directly. */
@@ -1175,6 +1176,27 @@ void editorMoveCursor(int key) {
     }
 }
 
+void editorToggleLineComment(int filerow) {
+    if (filerow >= E.numrows || E.syntax == NULL ||
+        E.syntax->singleline_comment_start[0] == '\0') return;
+
+    erow *row = &E.row[filerow];
+    char *prefix = E.syntax->singleline_comment_start;
+
+    int indent = 0;
+    while (indent < row->size && isspace(row->chars[indent])) indent++;
+
+    if (indent + 1 < row->size &&
+        row->chars[indent]   == prefix[0] &&
+        row->chars[indent+1] == prefix[1]) {
+        editorRowDelChar(row, indent);
+        editorRowDelChar(row, indent);
+    } else {
+        editorRowInsertChar(row, indent,   prefix[0]);
+        editorRowInsertChar(row, indent+1, prefix[1]);
+    }
+}
+
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
@@ -1207,6 +1229,9 @@ void editorProcessKeypress(int fd) {
         break;
     case CTRL_F:
         editorFind(fd);
+        break;
+    case CTRL_SLASH:
+        editorToggleLineComment(E.rowoff + E.cy);
         break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
