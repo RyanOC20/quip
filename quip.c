@@ -1388,6 +1388,47 @@ void editorToggleLineComment(int filerow) {
     }
 }
 
+void editorDeleteSelection(void) {
+    if (!E.sel_active) return;
+
+    int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
+    int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
+    int sr, sc, er, ec;
+    if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
+        sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
+    } else {
+        sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
+    }
+
+    if (sr == er && sc == ec) { editorSelClear(); return; }
+
+    if (sr == er) {
+        erow *row = &E.row[sr];
+        int count = ec - sc;
+        memmove(row->chars + sc, row->chars + ec, row->size - ec + 1);
+        row->size -= count;
+        editorUpdateRow(row);
+        E.dirty++;
+    } else {
+        E.row[sr].chars[sc] = '\0';
+        E.row[sr].size = sc;
+        editorRowAppendString(&E.row[sr], E.row[er].chars + ec, E.row[er].size - ec);
+        for (int i = er; i > sr; i--)
+            editorDelRow(i);
+    }
+
+    if (sr < E.rowoff) {
+        E.rowoff = sr; E.cy = 0;
+    } else if (sr >= E.rowoff + E.screenrows) {
+        E.rowoff = sr - E.screenrows + 1;
+        E.cy = E.screenrows - 1;
+    } else {
+        E.cy = sr - E.rowoff;
+    }
+    editorSetCol(sc);
+    E.sel_active = 0;
+}
+
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
@@ -1399,7 +1440,7 @@ void editorProcessKeypress(int fd) {
     int c = editorReadKey(fd);
     switch(c) {
     case ENTER:         /* Enter */
-        editorSelClear();
+        if (E.sel_active) editorDeleteSelection();
         editorInsertNewline();
         break;
     case CTRL_C:        /* Ctrl-c */
@@ -1429,8 +1470,8 @@ void editorProcessKeypress(int fd) {
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
-        editorSelClear();
-        editorDelChar();
+        if (E.sel_active) editorDeleteSelection();
+        else              editorDelChar();
         break;
     case PAGE_UP:
     case PAGE_DOWN:
@@ -1482,7 +1523,7 @@ void editorProcessKeypress(int fd) {
         editorSelClear();
         break;
     default:
-        editorSelClear();
+        if (E.sel_active) editorDeleteSelection();
         editorInsertChar(c);
         break;
     }
