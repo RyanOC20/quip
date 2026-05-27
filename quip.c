@@ -1224,6 +1224,89 @@ void editorMoveCursor(int key) {
     }
 }
 
+static void editorSetCol(int new_col) {
+    if (new_col < E.screencols) {
+        E.cx = new_col;
+        E.coloff = 0;
+    } else {
+        E.coloff = new_col - E.screencols + 1;
+        E.cx = E.screencols - 1;
+    }
+}
+
+void editorMoveWordRight(void) {
+    int filerow = E.rowoff + E.cy;
+    if (filerow >= E.numrows) return;
+    erow *row = &E.row[filerow];
+    int pos = E.coloff + E.cx;
+
+    if (pos >= row->size) {
+        if (filerow + 1 < E.numrows) {
+            editorMoveCursor(ARROW_DOWN);
+            E.cx = 0; E.coloff = 0;
+        }
+        return;
+    }
+    while (pos < row->size &&  is_separator(row->chars[pos])) pos++;
+    while (pos < row->size && !is_separator(row->chars[pos])) pos++;
+    editorSetCol(pos);
+}
+
+void editorMoveWordLeft(void) {
+    int filerow = E.rowoff + E.cy;
+    if (filerow >= E.numrows) return;
+    erow *row = &E.row[filerow];
+    int pos = E.coloff + E.cx;
+
+    if (pos == 0) {
+        if (filerow > 0) {
+            editorMoveCursor(ARROW_UP);
+            editorSetCol(E.row[filerow - 1].size);
+        }
+        return;
+    }
+    pos--;
+    while (pos > 0 &&  is_separator(row->chars[pos])) pos--;
+    while (pos > 0 && !is_separator(row->chars[pos - 1])) pos--;
+    editorSetCol(pos);
+}
+
+void editorMoveLineStart(void) {
+    int filerow = E.rowoff + E.cy;
+    if (filerow >= E.numrows) { E.cx = 0; E.coloff = 0; return; }
+    erow *row = &E.row[filerow];
+
+    int indent = 0;
+    while (indent < row->size && isspace(row->chars[indent])) indent++;
+
+    int filecol = E.coloff + E.cx;
+    if (filecol != indent)
+        editorSetCol(indent);
+    else { E.cx = 0; E.coloff = 0; }
+}
+
+void editorMoveLineEnd(void) {
+    int filerow = E.rowoff + E.cy;
+    if (filerow >= E.numrows) return;
+    editorSetCol(E.row[filerow].size);
+}
+
+void editorMoveFileStart(void) {
+    E.cx = 0; E.cy = 0; E.rowoff = 0; E.coloff = 0;
+}
+
+void editorMoveFileEnd(void) {
+    if (E.numrows == 0) return;
+    int last = E.numrows - 1;
+    if (last < E.screenrows) {
+        E.cy = last; E.rowoff = 0;
+    } else {
+        E.rowoff = last - E.screenrows + 1;
+        E.cy = E.screenrows - 1;
+    }
+    editorSetCol(E.row[last].size);
+}
+
 void editorToggleLineComment(int filerow) {
     if (filerow >= E.numrows || E.syntax == NULL ||
         E.syntax->singleline_comment_start[0] == '\0') return;
@@ -1310,16 +1393,16 @@ void editorProcessKeypress(int fd) {
     case SHIFT_ARROW_DOWN:
     case SHIFT_ARROW_LEFT:
     case SHIFT_ARROW_RIGHT:
-    case CTRL_ARROW_UP:
-    case CTRL_ARROW_DOWN:
-    case CTRL_ARROW_LEFT:
-    case CTRL_ARROW_RIGHT:
-    case ALT_ARROW_LEFT:
-    case ALT_ARROW_RIGHT:
-    case ALT_ARROW_UP:
-    case ALT_ARROW_DOWN:
-        /* Reserved for selection and word/line navigation. */
+        /* Reserved for selection. */
         break;
+    case CTRL_ARROW_UP:    editorMoveFileStart();         break;
+    case CTRL_ARROW_DOWN:  editorMoveFileEnd();           break;
+    case CTRL_ARROW_LEFT:  editorMoveLineStart();         break;
+    case CTRL_ARROW_RIGHT: editorMoveLineEnd();           break;
+    case ALT_ARROW_LEFT:   editorMoveWordLeft();          break;
+    case ALT_ARROW_RIGHT:  editorMoveWordRight();         break;
+    case ALT_ARROW_UP:     editorMoveCursor(ARROW_UP);   break;
+    case ALT_ARROW_DOWN:   editorMoveCursor(ARROW_DOWN); break;
     case CTRL_L: /* ctrl+l, clear screen */
         /* Just refresh the line as side effect. */
         break;
