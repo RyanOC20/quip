@@ -267,6 +267,13 @@ int editorReadKey(int fd) {
         case ESC:    /* escape sequence */
             /* If this is just an ESC, we'll timeout here. */
             if (read(fd,seq,1) == 0) return ESC;
+
+            /* ESC b / ESC f: Alt+Left / Alt+Right (2-byte sequences).
+             * Must be checked before reading seq[1] or the second read
+             * will time out — there are no more bytes in the sequence. */
+            if (seq[0] == 'b') return ALT_ARROW_LEFT;
+            if (seq[0] == 'f') return ALT_ARROW_RIGHT;
+
             if (read(fd,seq+1,1) == 0) return ESC;
 
             /* ESC [ sequences. */
@@ -331,10 +338,6 @@ int editorReadKey(int fd) {
                 case 'F': return END_KEY;
                 }
             }
-
-            /* ESC b / ESC f: Alt+Left / Alt+Right (macOS Terminal, readline-style). */
-            else if (seq[0] == 'b') { return ALT_ARROW_LEFT; }
-            else if (seq[0] == 'f') { return ALT_ARROW_RIGHT; }
 
             break;
         default:
