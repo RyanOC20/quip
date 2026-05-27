@@ -129,7 +129,19 @@ enum KEY_ACTION{
         HOME_KEY,
         END_KEY,
         PAGE_UP,
-        PAGE_DOWN
+        PAGE_DOWN,
+        SHIFT_ARROW_LEFT,
+        SHIFT_ARROW_RIGHT,
+        SHIFT_ARROW_UP,
+        SHIFT_ARROW_DOWN,
+        CTRL_ARROW_LEFT,
+        CTRL_ARROW_RIGHT,
+        CTRL_ARROW_UP,
+        CTRL_ARROW_DOWN,
+        ALT_ARROW_LEFT,
+        ALT_ARROW_RIGHT,
+        ALT_ARROW_UP,
+        ALT_ARROW_DOWN
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -246,7 +258,7 @@ fatal:
  * escape sequences. */
 int editorReadKey(int fd) {
     int nread;
-    char c, seq[3];
+    char c, seq[5];
     while ((nread = read(fd,&c,1)) == 0);
     if (nread == -1) exit(1);
 
@@ -268,6 +280,37 @@ int editorReadKey(int fd) {
                         case '5': return PAGE_UP;
                         case '6': return PAGE_DOWN;
                         }
+                    } else if (seq[1] == '1' && seq[2] == ';') {
+                        /* ESC [ 1 ; <modifier> <dir>: modifier+arrow sequences.
+                         * Modifier: 2=Shift, 3=Alt, 5=Ctrl. */
+                        if (read(fd,seq+3,1) == 0) return ESC;
+                        if (read(fd,seq+4,1) == 0) return ESC;
+                        switch(seq[3]) {
+                        case '2': /* Shift */
+                            switch(seq[4]) {
+                            case 'A': return SHIFT_ARROW_UP;
+                            case 'B': return SHIFT_ARROW_DOWN;
+                            case 'C': return SHIFT_ARROW_RIGHT;
+                            case 'D': return SHIFT_ARROW_LEFT;
+                            }
+                            break;
+                        case '3': /* Alt */
+                            switch(seq[4]) {
+                            case 'A': return ALT_ARROW_UP;
+                            case 'B': return ALT_ARROW_DOWN;
+                            case 'C': return ALT_ARROW_RIGHT;
+                            case 'D': return ALT_ARROW_LEFT;
+                            }
+                            break;
+                        case '5': /* Ctrl */
+                            switch(seq[4]) {
+                            case 'A': return CTRL_ARROW_UP;
+                            case 'B': return CTRL_ARROW_DOWN;
+                            case 'C': return CTRL_ARROW_RIGHT;
+                            case 'D': return CTRL_ARROW_LEFT;
+                            }
+                            break;
+                        }
                     }
                 } else {
                     switch(seq[1]) {
@@ -288,6 +331,11 @@ int editorReadKey(int fd) {
                 case 'F': return END_KEY;
                 }
             }
+
+            /* ESC b / ESC f: Alt+Left / Alt+Right (macOS Terminal, readline-style). */
+            else if (seq[0] == 'b') { return ALT_ARROW_LEFT; }
+            else if (seq[0] == 'f') { return ALT_ARROW_RIGHT; }
+
             break;
         default:
             return c;
@@ -1257,6 +1305,20 @@ void editorProcessKeypress(int fd) {
     case ARROW_LEFT:
     case ARROW_RIGHT:
         editorMoveCursor(c);
+        break;
+    case SHIFT_ARROW_UP:
+    case SHIFT_ARROW_DOWN:
+    case SHIFT_ARROW_LEFT:
+    case SHIFT_ARROW_RIGHT:
+    case CTRL_ARROW_UP:
+    case CTRL_ARROW_DOWN:
+    case CTRL_ARROW_LEFT:
+    case CTRL_ARROW_RIGHT:
+    case ALT_ARROW_LEFT:
+    case ALT_ARROW_RIGHT:
+    case ALT_ARROW_UP:
+    case ALT_ARROW_DOWN:
+        /* Reserved for selection and word/line navigation. */
         break;
     case CTRL_L: /* ctrl+l, clear screen */
         /* Just refresh the line as side effect. */
