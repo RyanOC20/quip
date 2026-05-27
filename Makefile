@@ -1,7 +1,7 @@
-all: kilo
+all: quip
 
-kilo: kilo.c
-	$(CC) -o kilo kilo.c -Wall -W -pedantic -std=c99
+quip: quip.c
+	$(CC) -o quip quip.c -Wall -W -pedantic -std=c99
 
 clean:
-	rm kilo
+	rm quip
