@@ -152,7 +152,9 @@ enum KEY_ACTION{
         SHIFT_CTRL_ARROW_LEFT,
         SHIFT_CTRL_ARROW_RIGHT,
         SHIFT_CTRL_ARROW_UP,
-        SHIFT_CTRL_ARROW_DOWN
+        SHIFT_CTRL_ARROW_DOWN,
+        SCROLL_UP,
+        SCROLL_DOWN
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -221,6 +223,7 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
+        write(STDOUT_FILENO, "\x1b[?1000l", 8); /* disable X10 mouse reporting */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -258,6 +261,7 @@ int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
+    write(STDOUT_FILENO, "\x1b[?1000h", 8); /* enable X10 mouse reporting */
     return 0;
 
 fatal:
@@ -354,6 +358,13 @@ int editorReadKey(int fd) {
                     case 'D': return ARROW_LEFT;
                     case 'H': return HOME_KEY;
                     case 'F': return END_KEY;
+                    case 'M':
+                        if (read(fd,seq+2,1) == 0) return ESC;
+                        if (read(fd,seq+3,1) == 0) return ESC;
+                        if (read(fd,seq+4,1) == 0) return ESC;
+                        if ((unsigned char)seq[2] == 96) return SCROLL_UP;
+                        if ((unsigned char)seq[2] == 97) return SCROLL_DOWN;
+                        return KEY_NULL;
                     }
                 }
             }
@@ -1505,6 +1516,27 @@ void editorProcessKeypress(int fd) {
         if (E.sel_active) editorDeleteSelection();
         else              editorDelChar();
         break;
+    case SCROLL_UP: {
+        int file_row = E.rowoff + E.cy;
+        int new_rowoff = E.rowoff - 3;
+        if (new_rowoff < 0) new_rowoff = 0;
+        E.rowoff = new_rowoff;
+        E.cy = file_row - E.rowoff;
+        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
+        if (E.cy < 0) E.cy = 0;
+        break;
+    }
+    case SCROLL_DOWN: {
+        int file_row = E.rowoff + E.cy;
+        int max_rowoff = (E.numrows > E.screenrows) ? E.numrows - E.screenrows : 0;
+        int new_rowoff = E.rowoff + 3;
+        if (new_rowoff > max_rowoff) new_rowoff = max_rowoff;
+        E.rowoff = new_rowoff;
+        E.cy = file_row - E.rowoff;
+        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
+        if (E.cy < 0) E.cy = 0;
+        break;
+    }
     case PAGE_UP:
     case PAGE_DOWN:
         editorSelClear();
