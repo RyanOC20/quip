@@ -12,6 +12,9 @@ Shortcuts:
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find string in file (<kbd>Esc</kbd> to exit search, arrows to navigate) |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy to clipboard |
+| <kbd>Ctrl</kbd>+<kbd>X</kbd> | Cut to clipboard |
+| <kbd>Ctrl</kbd>+<kbd>V</kbd> | Paste from clipboard |
 | <kbd>Ctrl</kbd>+<kbd>/</kbd> | Toggle inline comment |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> | Start of file |
 | <kbd>Ctrl</kbd>+<kbd>↓</kbd> | End of file |
