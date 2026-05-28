@@ -160,7 +160,9 @@ enum KEY_ACTION{
         SHIFT_CTRL_ARROW_DOWN,
         SCROLL_UP,
         SCROLL_DOWN,
-        MOUSE_CLICK
+        MOUSE_CLICK,
+        MOUSE_DRAG,
+        MOUSE_RELEASE
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -229,7 +231,7 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
-        write(STDOUT_FILENO, "\x1b[?1000l", 8); /* disable X10 mouse reporting */
+        write(STDOUT_FILENO, "\x1b[?1002l", 8); /* disable button-event mouse reporting */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -267,7 +269,7 @@ int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
-    write(STDOUT_FILENO, "\x1b[?1000h", 8); /* enable X10 mouse reporting */
+    write(STDOUT_FILENO, "\x1b[?1002h", 8); /* enable button-event mouse reporting */
     return 0;
 
 fatal:
@@ -319,6 +321,10 @@ static char *base64_decode(const char *src, int *outlen) {
     char *out = malloc(maxout + 1);
     int i = 0, j = 0;
     while (i < srclen) {
+        /* Skip whitespace that some terminals insert as line-wrap in responses. */
+        while (i < srclen && (src[i] == '\r' || src[i] == '\n' || src[i] == ' '))
+            i++;
+        if (i >= srclen) break;
         int v0 = b64val((unsigned char)src[i++]);
         int v1 = (i < srclen) ? b64val((unsigned char)src[i++]) : -1;
         int v2 = (i < srclen) ? b64val((unsigned char)src[i++]) : -1;
@@ -326,7 +332,7 @@ static char *base64_decode(const char *src, int *outlen) {
         if (v0 < 0 || v1 < 0) break;
         out[j++] = (char)((v0 << 2) | (v1 >> 4));
         if (v2 >= 0) out[j++] = (char)(((v1 & 0xf) << 4) | (v2 >> 2));
-        if (v3 >= 0) out[j++] = (char)(((v2 & 0x3) << 6) | v3);
+        if (v2 >= 0 && v3 >= 0) out[j++] = (char)(((v2 & 0x3) << 6) | v3);
     }
     out[j] = '\0';
     *outlen = j;
@@ -354,6 +360,18 @@ int editorReadKey(int fd) {
              * will time out — there are no more bytes in the sequence. */
             if (seq[0] == 'b') return ALT_ARROW_LEFT;
             if (seq[0] == 'f') return ALT_ARROW_RIGHT;
+
+            /* ESC ] starts an OSC sequence (e.g. an OSC 52 clipboard response
+             * that leaked into stdin).  Consume until BEL or ST so the base64
+             * payload is never misinterpreted as keystrokes. */
+            if (seq[0] == ']') {
+                char osc;
+                while (read(fd, &osc, 1) == 1 &&
+                       (unsigned char)osc != 0x07 &&
+                       (unsigned char)osc != 0x1b) {}
+                if ((unsigned char)osc == 0x1b) read(fd, &osc, 1); /* eat \ of ST */
+                break; /* restart the while(1) to read the next real key */
+            }
 
             if (read(fd,seq+1,1) == 0) return ESC;
 
@@ -424,19 +442,20 @@ int editorReadKey(int fd) {
                     case 'D': return ARROW_LEFT;
                     case 'H': return HOME_KEY;
                     case 'F': return END_KEY;
-                    case 'M':
+                    case 'M': {
                         if (read(fd,seq+2,1) == 0) return ESC;
                         if (read(fd,seq+3,1) == 0) return ESC;
                         if (read(fd,seq+4,1) == 0) return ESC;
-                        if ((unsigned char)seq[2] == 96) return SCROLL_UP;
-                        if ((unsigned char)seq[2] == 97) return SCROLL_DOWN;
-                        /* Button press (not release): btn byte < 64 */
-                        if ((unsigned char)seq[2] < 64) {
-                            E.mouse_cx = (unsigned char)seq[3] - 33;
-                            E.mouse_cy = (unsigned char)seq[4] - 33;
-                            return MOUSE_CLICK;
-                        }
+                        unsigned char mbtn = (unsigned char)seq[2];
+                        if (mbtn == 96) return SCROLL_UP;
+                        if (mbtn == 97) return SCROLL_DOWN;
+                        E.mouse_cx = (unsigned char)seq[3] - 33;
+                        E.mouse_cy = (unsigned char)seq[4] - 33;
+                        if (mbtn == 32) return MOUSE_CLICK;   /* left press */
+                        if (mbtn == 35) return MOUSE_RELEASE; /* any release */
+                        if (mbtn == 64) return MOUSE_DRAG;    /* motion, left held */
                         return KEY_NULL;
+                    }
                     }
                 }
             }
@@ -1552,6 +1571,28 @@ static void editorClampCursorCol(void) {
     if (cur_col > row->size) editorSetCol(row->size);
 }
 
+/* Moves cursor to E.mouse_cx/cy, converting render column → file column. */
+static void editorMouseSetCursor(void) {
+    if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
+        E.cy = E.mouse_cy;
+    if (E.mouse_cx >= 0 && E.mouse_cx < E.screencols) {
+        int file_row = E.rowoff + E.cy;
+        if (file_row < E.numrows) {
+            erow *row = &E.row[file_row];
+            int rcol = E.coloff + E.mouse_cx;
+            int fc = 0, rc = 0;
+            while (fc < row->size && rc < rcol) {
+                if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
+                else rc++;
+                fc++;
+            }
+            editorSetCol(fc);
+        } else {
+            editorSetCol(0);
+        }
+    }
+}
+
 /* ========================= Clipboard ======================================*/
 
 /* Returns malloc'd string of selected text, sets *outlen. Caller frees.
@@ -1620,36 +1661,83 @@ static void editorCopySelection(void) {
     free(b64);
 }
 
-/* Queries terminal clipboard via OSC 52.
- * Returns malloc'd decoded text (caller frees), or NULL on failure/timeout. */
-static char *editorReadClipboard(int *outlen) {
-    write(STDOUT_FILENO, "\x1b]52;c;?\x07", 9);
+/* Reads one byte from stdin with a timeout of `ms` milliseconds.
+ * Returns 1 on success, 0 on timeout, -1 on error. */
+static int readByteTimeout(unsigned char *ch, int ms) {
+    fd_set fds;
+    struct timeval tv;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    tv.tv_sec  = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    int r = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    if (r <= 0) return r;
+    return (read(STDIN_FILENO, ch, 1) == 1) ? 1 : -1;
+}
 
-    char buf[65536];
-    int i = 0;
+/* Queries terminal clipboard via OSC 52.
+ * Returns malloc'd decoded text (caller frees), or NULL on failure/timeout.
+ *
+ * Searches stdin for the literal prefix "\x1b]52;c;" so that everything
+ * before it — interleaved mouse events, tmux DCS passthrough wrappers, etc.
+ * — is consumed and never leaks into editorReadKey. */
+static char *editorReadClipboard(int *outlen) {
     unsigned char ch;
 
-    /* Wait for ESC that starts the response. */
-    do {
-        if (read(STDIN_FILENO, &ch, 1) != 1) return NULL;
-    } while (ch != 0x1b);
+    /* Drain anything already buffered in stdin. */
+    while (readByteTimeout(&ch, 0) == 1) {}
 
-    if (read(STDIN_FILENO, &ch, 1) != 1 || ch != ']') return NULL;
+    write(STDOUT_FILENO, "\x1b]52;c;?\x07", 9);
 
-    /* Read until BEL or ST (ESC \). */
+    /* Byte-by-byte KMP-lite search for "\x1b]52;c;" within a 500 ms window.
+     * This tolerates mouse events and tmux DCS wrappers arriving before the
+     * real response, consuming them completely so they never reach editorReadKey. */
+    const char     target[] = "\x1b]52;c;";
+    const int      tlen     = (int)(sizeof(target) - 1);
+    int            match    = 0;
+    struct timeval t0, tnow;
+    gettimeofday(&t0, NULL);
+
+    while (match < tlen) {
+        gettimeofday(&tnow, NULL);
+        int elapsed = (int)((tnow.tv_sec  - t0.tv_sec)  * 1000 +
+                            (tnow.tv_usec - t0.tv_usec) / 1000);
+        if (elapsed >= 500) return NULL;
+
+        if (readByteTimeout(&ch, 100) != 1) continue;
+
+        if (ch == (unsigned char)target[match]) {
+            match++;
+        } else {
+            /* Mismatch: restart, but check whether this byte opens a new match. */
+            match = (ch == (unsigned char)target[0]) ? 1 : 0;
+        }
+    }
+
+    /* Found the prefix.  Read the base64 payload until BEL (0x07) or ST (ESC \). */
+    char buf[65536];
+    int  i = 0;
     while (i < (int)(sizeof(buf) - 1)) {
-        if (read(STDIN_FILENO, &ch, 1) != 1) return NULL;
-        if (ch == 0x07) break;
-        if (ch == 0x1b) { read(STDIN_FILENO, &ch, 1); break; } /* ST */
+        if (readByteTimeout(&ch, 200) != 1) break;
+        if (ch == 0x07) {
+            /* BEL terminator.  Drain any trailing DCS-closing bytes quickly. */
+            unsigned char extra;
+            while (readByteTimeout(&extra, 50) == 1) {}
+            break;
+        }
+        if (ch == 0x1b) {
+            /* ST (ESC \) or an escaped inner byte in a DCS wrapper.
+             * Either way the payload is finished; drain whatever follows. */
+            unsigned char extra;
+            while (readByteTimeout(&extra, 50) == 1) {}
+            break;
+        }
         buf[i++] = (char)ch;
     }
     buf[i] = '\0';
 
-    /* buf is "52;c;<base64>" */
-    char *b64 = strstr(buf, "52;c;");
-    if (!b64) return NULL;
-    b64 += 5;
-    return base64_decode(b64, outlen);
+    if (i == 0) return NULL;
+    return base64_decode(buf, outlen);
 }
 
 /* Inserts text at cursor, splitting on newlines. */
@@ -1732,26 +1820,20 @@ void editorProcessKeypress(int fd) {
         else              editorDelChar();
         break;
     case MOUSE_CLICK:
-        editorSelClear();
-        if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
-            E.cy = E.mouse_cy;
-        if (E.mouse_cx >= 0 && E.mouse_cx < E.screencols) {
-            /* Convert render column back to file column for the target row. */
-            int file_row = E.rowoff + E.cy;
-            if (file_row < E.numrows) {
-                erow *row = &E.row[file_row];
-                int rcol = E.coloff + E.mouse_cx;
-                int fc = 0, rc = 0;
-                while (fc < row->size && rc < rcol) {
-                    if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
-                    else rc++;
-                    fc++;
-                }
-                editorSetCol(fc);
-            } else {
-                editorSetCol(0);
-            }
-        }
+        editorMouseSetCursor();
+        E.sel_active     = 1;
+        E.sel_anchor_row = E.rowoff + E.cy;
+        E.sel_anchor_col = E.coloff + E.cx;
+        break;
+    case MOUSE_DRAG:
+        if (E.sel_active) editorMouseSetCursor();
+        break;
+    case MOUSE_RELEASE:
+        editorMouseSetCursor();
+        /* If anchor == cursor the user just clicked; clear the selection. */
+        if (E.sel_anchor_row == E.rowoff + E.cy &&
+            E.sel_anchor_col == E.coloff + E.cx)
+            E.sel_active = 0;
         break;
     case SCROLL_UP: {
         int file_row = E.rowoff + E.cy;
@@ -1891,7 +1973,7 @@ int main(int argc, char **argv) {
     editorOpen(argv[1]);
     enableRawMode(STDIN_FILENO);
     editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-/ = toggle inline comment");
     while(1) {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
