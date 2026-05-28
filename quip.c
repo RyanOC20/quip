@@ -1480,6 +1480,14 @@ void editorDeleteSelection(void) {
     E.sel_active = 0;
 }
 
+static void editorClampCursorCol(void) {
+    int file_row = E.rowoff + E.cy;
+    if (file_row >= E.numrows) return;
+    erow *row = &E.row[file_row];
+    int cur_col = E.coloff + E.cx;
+    if (cur_col > row->size) editorSetCol(row->size);
+}
+
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
@@ -1554,6 +1562,7 @@ void editorProcessKeypress(int fd) {
         E.cy = file_row - E.rowoff;
         if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
         if (E.cy < 0) E.cy = 0;
+        editorClampCursorCol();
         break;
     }
     case SCROLL_DOWN: {
@@ -1565,6 +1574,7 @@ void editorProcessKeypress(int fd) {
         E.cy = file_row - E.rowoff;
         if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
         if (E.cy < 0) E.cy = 0;
+        editorClampCursorCol();
         break;
     }
     case PAGE_UP:
