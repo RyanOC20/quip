@@ -144,7 +144,15 @@ enum KEY_ACTION{
         ALT_ARROW_LEFT,
         ALT_ARROW_RIGHT,
         ALT_ARROW_UP,
-        ALT_ARROW_DOWN
+        ALT_ARROW_DOWN,
+        SHIFT_ALT_ARROW_LEFT,
+        SHIFT_ALT_ARROW_RIGHT,
+        SHIFT_ALT_ARROW_UP,
+        SHIFT_ALT_ARROW_DOWN,
+        SHIFT_CTRL_ARROW_LEFT,
+        SHIFT_CTRL_ARROW_RIGHT,
+        SHIFT_CTRL_ARROW_UP,
+        SHIFT_CTRL_ARROW_DOWN
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -292,7 +300,7 @@ int editorReadKey(int fd) {
                         }
                     } else if (seq[1] == '1' && seq[2] == ';') {
                         /* ESC [ 1 ; <modifier> <dir>: modifier+arrow sequences.
-                         * Modifier: 2=Shift, 3=Alt, 5=Ctrl. */
+                         * Modifier: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl. */
                         if (read(fd,seq+3,1) == 0) return ESC;
                         if (read(fd,seq+4,1) == 0) return ESC;
                         switch(seq[3]) {
@@ -312,12 +320,28 @@ int editorReadKey(int fd) {
                             case 'D': return ALT_ARROW_LEFT;
                             }
                             break;
+                        case '4': /* Shift+Alt */
+                            switch(seq[4]) {
+                            case 'A': return SHIFT_ALT_ARROW_UP;
+                            case 'B': return SHIFT_ALT_ARROW_DOWN;
+                            case 'C': return SHIFT_ALT_ARROW_RIGHT;
+                            case 'D': return SHIFT_ALT_ARROW_LEFT;
+                            }
+                            break;
                         case '5': /* Ctrl */
                             switch(seq[4]) {
                             case 'A': return CTRL_ARROW_UP;
                             case 'B': return CTRL_ARROW_DOWN;
                             case 'C': return CTRL_ARROW_RIGHT;
                             case 'D': return CTRL_ARROW_LEFT;
+                            }
+                            break;
+                        case '6': /* Shift+Ctrl */
+                            switch(seq[4]) {
+                            case 'A': return SHIFT_CTRL_ARROW_UP;
+                            case 'B': return SHIFT_CTRL_ARROW_DOWN;
+                            case 'C': return SHIFT_CTRL_ARROW_RIGHT;
+                            case 'D': return SHIFT_CTRL_ARROW_LEFT;
                             }
                             break;
                         }
@@ -936,6 +960,14 @@ int editorCharToRenderCol(erow *row, int char_col) {
 
 void editorSelClear(void) { E.sel_active = 0; }
 
+static void editorSelSetAnchor(void) {
+    if (!E.sel_active) {
+        E.sel_active     = 1;
+        E.sel_anchor_row = E.rowoff + E.cy;
+        E.sel_anchor_col = E.coloff + E.cx;
+    }
+}
+
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void) {
@@ -1496,18 +1528,29 @@ void editorProcessKeypress(int fd) {
         editorMoveCursor(c);
         break;
     case SHIFT_ARROW_UP:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
     case SHIFT_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
     case SHIFT_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_LEFT);  break;
     case SHIFT_ARROW_RIGHT:
-        if (!E.sel_active) {
-            E.sel_active     = 1;
-            E.sel_anchor_row = E.rowoff + E.cy;
-            E.sel_anchor_col = E.coloff + E.cx;
-        }
-        editorMoveCursor(c == SHIFT_ARROW_UP   ? ARROW_UP    :
-                         c == SHIFT_ARROW_DOWN ? ARROW_DOWN  :
-                         c == SHIFT_ARROW_LEFT ? ARROW_LEFT  : ARROW_RIGHT);
-        break;
+        editorSelSetAnchor(); editorMoveCursor(ARROW_RIGHT); break;
+    case SHIFT_ALT_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveWordLeft();           break;
+    case SHIFT_ALT_ARROW_RIGHT:
+        editorSelSetAnchor(); editorMoveWordRight();          break;
+    case SHIFT_ALT_ARROW_UP:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
+    case SHIFT_ALT_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
+    case SHIFT_CTRL_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveLineStart();          break;
+    case SHIFT_CTRL_ARROW_RIGHT:
+        editorSelSetAnchor(); editorMoveLineEnd();            break;
+    case SHIFT_CTRL_ARROW_UP:
+        editorSelSetAnchor(); editorMoveFileStart();          break;
+    case SHIFT_CTRL_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveFileEnd();            break;
     case CTRL_ARROW_UP:    editorSelClear(); editorMoveFileStart();         break;
     case CTRL_ARROW_DOWN:  editorSelClear(); editorMoveFileEnd();           break;
     case CTRL_ARROW_LEFT:  editorSelClear(); editorMoveLineStart();         break;
