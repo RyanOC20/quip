@@ -100,6 +100,9 @@ struct editorConfig {
     char statusmsg[80];
     time_t statusmsg_time;
     struct editorSyntax *syntax;    /* Current syntax highlight, or NULL. */
+    int sel_active;       /* 1 if a selection is live. */
+    int sel_anchor_row;   /* File row where the selection was anchored. */
+    int sel_anchor_col;   /* File col where the selection was anchored. */
 };
 
 static struct editorConfig E;
@@ -141,7 +144,15 @@ enum KEY_ACTION{
         ALT_ARROW_LEFT,
         ALT_ARROW_RIGHT,
         ALT_ARROW_UP,
-        ALT_ARROW_DOWN
+        ALT_ARROW_DOWN,
+        SHIFT_ALT_ARROW_LEFT,
+        SHIFT_ALT_ARROW_RIGHT,
+        SHIFT_ALT_ARROW_UP,
+        SHIFT_ALT_ARROW_DOWN,
+        SHIFT_CTRL_ARROW_LEFT,
+        SHIFT_CTRL_ARROW_RIGHT,
+        SHIFT_CTRL_ARROW_UP,
+        SHIFT_CTRL_ARROW_DOWN
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -289,7 +300,7 @@ int editorReadKey(int fd) {
                         }
                     } else if (seq[1] == '1' && seq[2] == ';') {
                         /* ESC [ 1 ; <modifier> <dir>: modifier+arrow sequences.
-                         * Modifier: 2=Shift, 3=Alt, 5=Ctrl. */
+                         * Modifier: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl. */
                         if (read(fd,seq+3,1) == 0) return ESC;
                         if (read(fd,seq+4,1) == 0) return ESC;
                         switch(seq[3]) {
@@ -309,12 +320,28 @@ int editorReadKey(int fd) {
                             case 'D': return ALT_ARROW_LEFT;
                             }
                             break;
+                        case '4': /* Shift+Alt */
+                            switch(seq[4]) {
+                            case 'A': return SHIFT_ALT_ARROW_UP;
+                            case 'B': return SHIFT_ALT_ARROW_DOWN;
+                            case 'C': return SHIFT_ALT_ARROW_RIGHT;
+                            case 'D': return SHIFT_ALT_ARROW_LEFT;
+                            }
+                            break;
                         case '5': /* Ctrl */
                             switch(seq[4]) {
                             case 'A': return CTRL_ARROW_UP;
                             case 'B': return CTRL_ARROW_DOWN;
                             case 'C': return CTRL_ARROW_RIGHT;
                             case 'D': return CTRL_ARROW_LEFT;
+                            }
+                            break;
+                        case '6': /* Shift+Ctrl */
+                            switch(seq[4]) {
+                            case 'A': return SHIFT_CTRL_ARROW_UP;
+                            case 'B': return SHIFT_CTRL_ARROW_DOWN;
+                            case 'C': return SHIFT_CTRL_ARROW_RIGHT;
+                            case 'D': return SHIFT_CTRL_ARROW_LEFT;
                             }
                             break;
                         }
@@ -922,6 +949,25 @@ void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
+int editorCharToRenderCol(erow *row, int char_col) {
+    int rcol = 0;
+    for (int i = 0; i < char_col && i < row->size; i++) {
+        if (row->chars[i] == TAB) rcol += 8 - (rcol % 8);
+        else rcol++;
+    }
+    return rcol;
+}
+
+void editorSelClear(void) { E.sel_active = 0; }
+
+static void editorSelSetAnchor(void) {
+    if (!E.sel_active) {
+        E.sel_active     = 1;
+        E.sel_anchor_row = E.rowoff + E.cy;
+        E.sel_anchor_col = E.coloff + E.cx;
+    }
+}
+
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void) {
@@ -955,23 +1001,61 @@ void editorRefreshScreen(void) {
 
         r = &E.row[filerow];
 
+        /* Compute selection render-column range for this row. */
+        int sel_rcol_start = -1, sel_rcol_end = -1;
+        if (E.sel_active) {
+            int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
+            int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
+            int sr, sc, er, ec;
+            if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
+                sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
+            } else {
+                sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
+            }
+            if (filerow >= sr && filerow <= er) {
+                int char_start = (filerow == sr) ? sc : 0;
+                int char_end   = (filerow == er) ? ec : r->size;
+                sel_rcol_start = editorCharToRenderCol(r, char_start);
+                sel_rcol_end   = (filerow < er) ? r->rsize
+                                                : editorCharToRenderCol(r, char_end);
+            }
+        }
+
         int len = r->rsize - E.coloff;
         int current_color = -1;
+        int in_selection = 0;
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
             unsigned char *hl = r->hl+E.coloff;
             int j;
             for (j = 0; j < len; j++) {
+                int rcol = E.coloff + j;
+
+                /* Handle selection highlight transitions. */
+                if (sel_rcol_start >= 0) {
+                    if (!in_selection && rcol >= sel_rcol_start && rcol < sel_rcol_end) {
+                        abAppend(&ab,"\x1b[7m",4);
+                        in_selection = 1;
+                        current_color = -1;
+                    } else if (in_selection && rcol >= sel_rcol_end) {
+                        abAppend(&ab,"\x1b[27m",5);
+                        in_selection = 0;
+                        current_color = -1;
+                    }
+                }
+
                 if (hl[j] == HL_NONPRINT) {
                     char sym;
-                    abAppend(&ab,"\x1b[7m",4);
+                    if (!in_selection) abAppend(&ab,"\x1b[7m",4);
                     if (c[j] <= 26)
                         sym = '@'+c[j];
                     else
                         sym = '?';
                     abAppend(&ab,&sym,1);
                     abAppend(&ab,"\x1b[0m",4);
+                    current_color = -1;
+                    if (in_selection) abAppend(&ab,"\x1b[7m",4);
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         abAppend(&ab,"\x1b[39m",5);
@@ -991,7 +1075,12 @@ void editorRefreshScreen(void) {
             }
         }
         abAppend(&ab,"\x1b[39m",5);
-        abAppend(&ab,"\x1b[0K",4);
+        if (in_selection) {
+            abAppend(&ab,"\x1b[0K",4);  /* erase to EOL with reverse-video bg */
+            abAppend(&ab,"\x1b[27m",5); /* reverse off */
+        } else {
+            abAppend(&ab,"\x1b[0K",4);
+        }
         abAppend(&ab,"\r\n",2);
     }
 
@@ -1331,6 +1420,47 @@ void editorToggleLineComment(int filerow) {
     }
 }
 
+void editorDeleteSelection(void) {
+    if (!E.sel_active) return;
+
+    int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
+    int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
+    int sr, sc, er, ec;
+    if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
+        sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
+    } else {
+        sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
+    }
+
+    if (sr == er && sc == ec) { editorSelClear(); return; }
+
+    if (sr == er) {
+        erow *row = &E.row[sr];
+        int count = ec - sc;
+        memmove(row->chars + sc, row->chars + ec, row->size - ec + 1);
+        row->size -= count;
+        editorUpdateRow(row);
+        E.dirty++;
+    } else {
+        E.row[sr].chars[sc] = '\0';
+        E.row[sr].size = sc;
+        editorRowAppendString(&E.row[sr], E.row[er].chars + ec, E.row[er].size - ec);
+        for (int i = er; i > sr; i--)
+            editorDelRow(i);
+    }
+
+    if (sr < E.rowoff) {
+        E.rowoff = sr; E.cy = 0;
+    } else if (sr >= E.rowoff + E.screenrows) {
+        E.rowoff = sr - E.screenrows + 1;
+        E.cy = E.screenrows - 1;
+    } else {
+        E.cy = sr - E.rowoff;
+    }
+    editorSetCol(sc);
+    E.sel_active = 0;
+}
+
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
@@ -1342,6 +1472,7 @@ void editorProcessKeypress(int fd) {
     int c = editorReadKey(fd);
     switch(c) {
     case ENTER:         /* Enter */
+        if (E.sel_active) editorDeleteSelection();
         editorInsertNewline();
         break;
     case CTRL_C:        /* Ctrl-c */
@@ -1365,15 +1496,18 @@ void editorProcessKeypress(int fd) {
         editorFind(fd);
         break;
     case CTRL_SLASH:
+        editorSelClear();
         editorToggleLineComment(E.rowoff + E.cy);
         break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
-        editorDelChar();
+        if (E.sel_active) editorDeleteSelection();
+        else              editorDelChar();
         break;
     case PAGE_UP:
     case PAGE_DOWN:
+        editorSelClear();
         if (c == PAGE_UP && E.cy != 0)
             E.cy = 0;
         else if (c == PAGE_DOWN && E.cy != E.screenrows-1)
@@ -1390,29 +1524,49 @@ void editorProcessKeypress(int fd) {
     case ARROW_DOWN:
     case ARROW_LEFT:
     case ARROW_RIGHT:
+        editorSelClear();
         editorMoveCursor(c);
         break;
     case SHIFT_ARROW_UP:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
     case SHIFT_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
     case SHIFT_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_LEFT);  break;
     case SHIFT_ARROW_RIGHT:
-        /* Reserved for selection. */
-        break;
-    case CTRL_ARROW_UP:    editorMoveFileStart();         break;
-    case CTRL_ARROW_DOWN:  editorMoveFileEnd();           break;
-    case CTRL_ARROW_LEFT:  editorMoveLineStart();         break;
-    case CTRL_ARROW_RIGHT: editorMoveLineEnd();           break;
-    case ALT_ARROW_LEFT:   editorMoveWordLeft();          break;
-    case ALT_ARROW_RIGHT:  editorMoveWordRight();         break;
-    case ALT_ARROW_UP:     editorMoveCursor(ARROW_UP);   break;
-    case ALT_ARROW_DOWN:   editorMoveCursor(ARROW_DOWN); break;
+        editorSelSetAnchor(); editorMoveCursor(ARROW_RIGHT); break;
+    case SHIFT_ALT_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveWordLeft();           break;
+    case SHIFT_ALT_ARROW_RIGHT:
+        editorSelSetAnchor(); editorMoveWordRight();          break;
+    case SHIFT_ALT_ARROW_UP:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
+    case SHIFT_ALT_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
+    case SHIFT_CTRL_ARROW_LEFT:
+        editorSelSetAnchor(); editorMoveLineStart();          break;
+    case SHIFT_CTRL_ARROW_RIGHT:
+        editorSelSetAnchor(); editorMoveLineEnd();            break;
+    case SHIFT_CTRL_ARROW_UP:
+        editorSelSetAnchor(); editorMoveFileStart();          break;
+    case SHIFT_CTRL_ARROW_DOWN:
+        editorSelSetAnchor(); editorMoveFileEnd();            break;
+    case CTRL_ARROW_UP:    editorSelClear(); editorMoveFileStart();         break;
+    case CTRL_ARROW_DOWN:  editorSelClear(); editorMoveFileEnd();           break;
+    case CTRL_ARROW_LEFT:  editorSelClear(); editorMoveLineStart();         break;
+    case CTRL_ARROW_RIGHT: editorSelClear(); editorMoveLineEnd();           break;
+    case ALT_ARROW_LEFT:   editorSelClear(); editorMoveWordLeft();          break;
+    case ALT_ARROW_RIGHT:  editorSelClear(); editorMoveWordRight();         break;
+    case ALT_ARROW_UP:     editorSelClear(); editorMoveCursor(ARROW_UP);   break;
+    case ALT_ARROW_DOWN:   editorSelClear(); editorMoveCursor(ARROW_DOWN); break;
     case CTRL_L: /* ctrl+l, clear screen */
         /* Just refresh the line as side effect. */
         break;
     case ESC:
-        /* Nothing to do for ESC in this mode. */
+        editorSelClear();
         break;
     default:
+        if (E.sel_active) editorDeleteSelection();
         editorInsertChar(c);
         break;
     }
@@ -1450,6 +1604,7 @@ void initEditor(void) {
     E.dirty = 0;
     E.filename = NULL;
     E.syntax = NULL;
+    E.sel_active = 0;
     updateWindowSize();
     signal(SIGWINCH, handleSigWinCh);
 }
