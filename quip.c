@@ -103,6 +103,7 @@ struct editorConfig {
     int sel_active;       /* 1 if a selection is live. */
     int sel_anchor_row;   /* File row where the selection was anchored. */
     int sel_anchor_col;   /* File col where the selection was anchored. */
+    int mouse_cx, mouse_cy; /* Screen position of last mouse click. */
 };
 
 static struct editorConfig E;
@@ -152,7 +153,10 @@ enum KEY_ACTION{
         SHIFT_CTRL_ARROW_LEFT,
         SHIFT_CTRL_ARROW_RIGHT,
         SHIFT_CTRL_ARROW_UP,
-        SHIFT_CTRL_ARROW_DOWN
+        SHIFT_CTRL_ARROW_DOWN,
+        SCROLL_UP,
+        SCROLL_DOWN,
+        MOUSE_CLICK
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -221,6 +225,7 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
+        write(STDOUT_FILENO, "\x1b[?1000l", 8); /* disable X10 mouse reporting */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -258,6 +263,7 @@ int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
+    write(STDOUT_FILENO, "\x1b[?1000h", 8); /* enable X10 mouse reporting */
     return 0;
 
 fatal:
@@ -354,6 +360,19 @@ int editorReadKey(int fd) {
                     case 'D': return ARROW_LEFT;
                     case 'H': return HOME_KEY;
                     case 'F': return END_KEY;
+                    case 'M':
+                        if (read(fd,seq+2,1) == 0) return ESC;
+                        if (read(fd,seq+3,1) == 0) return ESC;
+                        if (read(fd,seq+4,1) == 0) return ESC;
+                        if ((unsigned char)seq[2] == 96) return SCROLL_UP;
+                        if ((unsigned char)seq[2] == 97) return SCROLL_DOWN;
+                        /* Button press (not release): btn byte < 64 */
+                        if ((unsigned char)seq[2] < 64) {
+                            E.mouse_cx = (unsigned char)seq[3] - 33;
+                            E.mouse_cy = (unsigned char)seq[4] - 33;
+                            return MOUSE_CLICK;
+                        }
+                        return KEY_NULL;
                     }
                 }
             }
@@ -1461,6 +1480,14 @@ void editorDeleteSelection(void) {
     E.sel_active = 0;
 }
 
+static void editorClampCursorCol(void) {
+    int file_row = E.rowoff + E.cy;
+    if (file_row >= E.numrows) return;
+    erow *row = &E.row[file_row];
+    int cur_col = E.coloff + E.cx;
+    if (cur_col > row->size) editorSetCol(row->size);
+}
+
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
@@ -1505,6 +1532,51 @@ void editorProcessKeypress(int fd) {
         if (E.sel_active) editorDeleteSelection();
         else              editorDelChar();
         break;
+    case MOUSE_CLICK:
+        editorSelClear();
+        if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
+            E.cy = E.mouse_cy;
+        if (E.mouse_cx >= 0 && E.mouse_cx < E.screencols) {
+            /* Convert render column back to file column for the target row. */
+            int file_row = E.rowoff + E.cy;
+            if (file_row < E.numrows) {
+                erow *row = &E.row[file_row];
+                int rcol = E.coloff + E.mouse_cx;
+                int fc = 0, rc = 0;
+                while (fc < row->size && rc < rcol) {
+                    if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
+                    else rc++;
+                    fc++;
+                }
+                editorSetCol(fc);
+            } else {
+                editorSetCol(0);
+            }
+        }
+        break;
+    case SCROLL_UP: {
+        int file_row = E.rowoff + E.cy;
+        int new_rowoff = E.rowoff - 3;
+        if (new_rowoff < 0) new_rowoff = 0;
+        E.rowoff = new_rowoff;
+        E.cy = file_row - E.rowoff;
+        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
+        if (E.cy < 0) E.cy = 0;
+        editorClampCursorCol();
+        break;
+    }
+    case SCROLL_DOWN: {
+        int file_row = E.rowoff + E.cy;
+        int max_rowoff = (E.numrows > E.screenrows) ? E.numrows - E.screenrows : 0;
+        int new_rowoff = E.rowoff + 3;
+        if (new_rowoff > max_rowoff) new_rowoff = max_rowoff;
+        E.rowoff = new_rowoff;
+        E.cy = file_row - E.rowoff;
+        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
+        if (E.cy < 0) E.cy = 0;
+        editorClampCursorCol();
+        break;
+    }
     case PAGE_UP:
     case PAGE_DOWN:
         editorSelClear();
