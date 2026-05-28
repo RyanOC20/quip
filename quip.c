@@ -103,6 +103,7 @@ struct editorConfig {
     int sel_active;       /* 1 if a selection is live. */
     int sel_anchor_row;   /* File row where the selection was anchored. */
     int sel_anchor_col;   /* File col where the selection was anchored. */
+    int mouse_cx, mouse_cy; /* Screen position of last mouse click. */
 };
 
 static struct editorConfig E;
@@ -154,7 +155,8 @@ enum KEY_ACTION{
         SHIFT_CTRL_ARROW_UP,
         SHIFT_CTRL_ARROW_DOWN,
         SCROLL_UP,
-        SCROLL_DOWN
+        SCROLL_DOWN,
+        MOUSE_CLICK
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -364,6 +366,12 @@ int editorReadKey(int fd) {
                         if (read(fd,seq+4,1) == 0) return ESC;
                         if ((unsigned char)seq[2] == 96) return SCROLL_UP;
                         if ((unsigned char)seq[2] == 97) return SCROLL_DOWN;
+                        /* Button press (not release): btn byte < 64 */
+                        if ((unsigned char)seq[2] < 64) {
+                            E.mouse_cx = (unsigned char)seq[3] - 33;
+                            E.mouse_cy = (unsigned char)seq[4] - 33;
+                            return MOUSE_CLICK;
+                        }
                         return KEY_NULL;
                     }
                 }
@@ -1515,6 +1523,28 @@ void editorProcessKeypress(int fd) {
     case DEL_KEY:
         if (E.sel_active) editorDeleteSelection();
         else              editorDelChar();
+        break;
+    case MOUSE_CLICK:
+        editorSelClear();
+        if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
+            E.cy = E.mouse_cy;
+        if (E.mouse_cx >= 0 && E.mouse_cx < E.screencols) {
+            /* Convert render column back to file column for the target row. */
+            int file_row = E.rowoff + E.cy;
+            if (file_row < E.numrows) {
+                erow *row = &E.row[file_row];
+                int rcol = E.coloff + E.mouse_cx;
+                int fc = 0, rc = 0;
+                while (fc < row->size && rc < rcol) {
+                    if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
+                    else rc++;
+                    fc++;
+                }
+                editorSetCol(fc);
+            } else {
+                editorSetCol(0);
+            }
+        }
         break;
     case SCROLL_UP: {
         int file_row = E.rowoff + E.cy;
