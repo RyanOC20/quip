@@ -17,10 +17,11 @@
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
  * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
  * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
  * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
@@ -110,6 +111,22 @@ struct editorConfig {
 
 static struct editorConfig E;
 
+/* ================================ Undo/Redo ================================ */
+
+typedef struct editorSnapshot {
+    char *text;
+    int   len;
+    int   cx, cy, rowoff, coloff;
+} editorSnapshot;
+
+#define UNDO_HISTORY_MAX 200
+
+static editorSnapshot undo_hist[UNDO_HISTORY_MAX];
+static int undo_cur   = -1;
+static int undo_count =  0;
+static int undo_saved = -1;
+static int undo_last_insert = 0;
+
 enum KEY_ACTION{
         KEY_NULL = 0,       /* NULL */
         CTRL_C = 3,         /* Ctrl-c */
@@ -124,6 +141,8 @@ enum KEY_ACTION{
         CTRL_U = 21,        /* Ctrl-u */
         CTRL_V = 22,        /* Ctrl-v */
         CTRL_X = 24,        /* Ctrl-x */
+        CTRL_Y = 25,        /* Ctrl-y */
+        CTRL_Z = 26,        /* Ctrl-z */
         ESC = 27,           /* Escape */
         CTRL_SLASH = 31,    /* Ctrl-/ */
         BACKSPACE =  127,   /* Backspace */
@@ -1764,6 +1783,87 @@ static void editorPaste(void) {
     }
 }
 
+/* ========================= Undo / Redo helpers ============================ */
+
+void editorPushSnapshot(void) {
+    /* Discard any redo entries above undo_cur. */
+    for (int i = undo_cur + 1; i < undo_count; i++)
+        free(undo_hist[i].text);
+    undo_count = undo_cur + 1;
+
+    /* If the history is full, drop the oldest entry. */
+    if (undo_count == UNDO_HISTORY_MAX) {
+        free(undo_hist[0].text);
+        memmove(&undo_hist[0], &undo_hist[1],
+                (UNDO_HISTORY_MAX - 1) * sizeof(editorSnapshot));
+        undo_count--;
+        if (undo_cur > 0) undo_cur--;
+        if (undo_saved > 0) undo_saved--;
+        else if (undo_saved == 0) undo_saved = -1;
+    }
+
+    int len;
+    char *text = editorRowsToString(&len);
+    undo_hist[undo_count].text   = text;
+    undo_hist[undo_count].len    = len;
+    undo_hist[undo_count].cx     = E.cx;
+    undo_hist[undo_count].cy     = E.cy;
+    undo_hist[undo_count].rowoff = E.rowoff;
+    undo_hist[undo_count].coloff = E.coloff;
+    undo_cur = undo_count;
+    undo_count++;
+}
+
+void editorRestoreSnapshot(editorSnapshot *snap) {
+    for (int i = 0; i < E.numrows; i++) {
+        free(E.row[i].render);
+        free(E.row[i].chars);
+        free(E.row[i].hl);
+    }
+    free(E.row);
+    E.row    = NULL;
+    E.numrows = 0;
+
+    /* Rebuild rows from serialized text (rows separated by '\n'). */
+    char *p   = snap->text;
+    int   rem = snap->len;
+    while (rem > 0) {
+        char *nl      = memchr(p, '\n', rem);
+        int   linelen = nl ? (int)(nl - p) : rem;
+        editorInsertRow(E.numrows, p, linelen);
+        if (!nl) break;
+        rem -= linelen + 1;
+        p   += linelen + 1;
+    }
+
+    E.cx     = snap->cx;
+    E.cy     = snap->cy;
+    E.rowoff = snap->rowoff;
+    E.coloff = snap->coloff;
+    E.dirty  = (undo_cur != undo_saved);
+    E.sel_active = 0;
+}
+
+void editorUndo(void) {
+    if (undo_cur <= 0) {
+        editorSetStatusMessage("Nothing to undo.");
+        return;
+    }
+    undo_cur--;
+    editorRestoreSnapshot(&undo_hist[undo_cur]);
+    undo_last_insert = 0;
+}
+
+void editorRedo(void) {
+    if (undo_cur >= undo_count - 1) {
+        editorSetStatusMessage("Nothing to redo.");
+        return;
+    }
+    undo_cur++;
+    editorRestoreSnapshot(&undo_hist[undo_cur]);
+    undo_last_insert = 0;
+}
+
 /* ========================================================================= */
 
 /* Process events arriving from the standard input, which is, the user
@@ -1776,7 +1876,15 @@ void editorProcessKeypress(int fd) {
 
     int c = editorReadKey(fd);
     switch(c) {
+    case CTRL_Z:        /* Ctrl-z — undo */
+        editorUndo();
+        break;
+    case CTRL_Y:        /* Ctrl-y — redo */
+        editorRedo();
+        break;
     case ENTER:         /* Enter */
+        editorPushSnapshot();
+        undo_last_insert = 0;
         if (E.sel_active) editorDeleteSelection();
         editorInsertNewline();
         break;
@@ -1785,11 +1893,15 @@ void editorProcessKeypress(int fd) {
         break;
     case CTRL_X:        /* Ctrl-x — cut selection */
         if (E.sel_active) {
+            editorPushSnapshot();
+            undo_last_insert = 0;
             editorCopySelection();
             editorDeleteSelection();
         }
         break;
     case CTRL_V:        /* Ctrl-v — paste */
+        editorPushSnapshot();
+        undo_last_insert = 0;
         editorSelClear();
         editorPaste();
         break;
@@ -1805,21 +1917,27 @@ void editorProcessKeypress(int fd) {
         break;
     case CTRL_S:        /* Ctrl-s */
         editorSave();
+        undo_saved = undo_cur;
         break;
     case CTRL_F:
         editorFind(fd);
         break;
     case CTRL_SLASH:
+        editorPushSnapshot();
+        undo_last_insert = 0;
         editorSelClear();
         editorToggleLineComment(E.rowoff + E.cy);
         break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
+        editorPushSnapshot();
+        undo_last_insert = 0;
         if (E.sel_active) editorDeleteSelection();
         else              editorDelChar();
         break;
     case MOUSE_CLICK:
+        undo_last_insert = 0;
         editorMouseSetCursor();
         E.sel_active     = 1;
         E.sel_anchor_row = E.rowoff + E.cy;
@@ -1836,6 +1954,7 @@ void editorProcessKeypress(int fd) {
             E.sel_active = 0;
         break;
     case SCROLL_UP: {
+        undo_last_insert = 0;
         int file_row = E.rowoff + E.cy;
         int new_rowoff = E.rowoff - 3;
         if (new_rowoff < 0) new_rowoff = 0;
@@ -1847,6 +1966,7 @@ void editorProcessKeypress(int fd) {
         break;
     }
     case SCROLL_DOWN: {
+        undo_last_insert = 0;
         int file_row = E.rowoff + E.cy;
         int max_rowoff = (E.numrows > E.screenrows) ? E.numrows - E.screenrows : 0;
         int new_rowoff = E.rowoff + 3;
@@ -1860,6 +1980,7 @@ void editorProcessKeypress(int fd) {
     }
     case PAGE_UP:
     case PAGE_DOWN:
+        undo_last_insert = 0;
         editorSelClear();
         if (c == PAGE_UP && E.cy != 0)
             E.cy = 0;
@@ -1877,48 +1998,82 @@ void editorProcessKeypress(int fd) {
     case ARROW_DOWN:
     case ARROW_LEFT:
     case ARROW_RIGHT:
+        undo_last_insert = 0;
         editorSelClear();
         editorMoveCursor(c);
         break;
     case SHIFT_ARROW_UP:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
     case SHIFT_ARROW_DOWN:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
     case SHIFT_ARROW_LEFT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_LEFT);  break;
     case SHIFT_ARROW_RIGHT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_RIGHT); break;
     case SHIFT_ALT_ARROW_LEFT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveWordLeft();           break;
     case SHIFT_ALT_ARROW_RIGHT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveWordRight();          break;
     case SHIFT_ALT_ARROW_UP:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_UP);    break;
     case SHIFT_ALT_ARROW_DOWN:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveCursor(ARROW_DOWN);  break;
     case SHIFT_CTRL_ARROW_LEFT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveLineStart();          break;
     case SHIFT_CTRL_ARROW_RIGHT:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveLineEnd();            break;
     case SHIFT_CTRL_ARROW_UP:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveFileStart();          break;
     case SHIFT_CTRL_ARROW_DOWN:
+        undo_last_insert = 0;
         editorSelSetAnchor(); editorMoveFileEnd();            break;
-    case CTRL_ARROW_UP:    editorSelClear(); editorMoveFileStart();         break;
-    case CTRL_ARROW_DOWN:  editorSelClear(); editorMoveFileEnd();           break;
-    case CTRL_ARROW_LEFT:  editorSelClear(); editorMoveLineStart();         break;
-    case CTRL_ARROW_RIGHT: editorSelClear(); editorMoveLineEnd();           break;
-    case ALT_ARROW_LEFT:   editorSelClear(); editorMoveWordLeft();          break;
-    case ALT_ARROW_RIGHT:  editorSelClear(); editorMoveWordRight();         break;
-    case ALT_ARROW_UP:     editorSelClear(); editorMoveCursor(ARROW_UP);   break;
-    case ALT_ARROW_DOWN:   editorSelClear(); editorMoveCursor(ARROW_DOWN); break;
-    case CTRL_L: /* ctrl+l, clear screen */
-        /* Just refresh the line as side effect. */
+    case CTRL_ARROW_UP:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveFileStart();              break;
+    case CTRL_ARROW_DOWN:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveFileEnd();                break;
+    case CTRL_ARROW_LEFT:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveLineStart();              break;
+    case CTRL_ARROW_RIGHT:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveLineEnd();                break;
+    case ALT_ARROW_LEFT:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveWordLeft();               break;
+    case ALT_ARROW_RIGHT:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveWordRight();              break;
+    case ALT_ARROW_UP:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveCursor(ARROW_UP);         break;
+    case ALT_ARROW_DOWN:
+        undo_last_insert = 0;
+        editorSelClear(); editorMoveCursor(ARROW_DOWN);       break;
+    case CTRL_L:
+        undo_last_insert = 0;
         break;
     case ESC:
+        undo_last_insert = 0;
         editorSelClear();
         break;
     default:
+        if (!undo_last_insert || E.sel_active) {
+            editorPushSnapshot();
+            undo_last_insert = 1;
+        }
         if (E.sel_active) editorDeleteSelection();
         editorInsertChar(c);
         break;
@@ -1971,6 +2126,9 @@ int main(int argc, char **argv) {
     initEditor();
     editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
+    editorPushSnapshot();
+    undo_saved = undo_cur;
+    E.dirty = 0;
     enableRawMode(STDIN_FILENO);
     editorSetStatusMessage(
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-/ = toggle inline comment");
