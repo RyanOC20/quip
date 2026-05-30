@@ -15,6 +15,8 @@ Shortcuts:
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy to clipboard |
 | <kbd>Ctrl</kbd>+<kbd>X</kbd> | Cut to clipboard |
 | <kbd>Ctrl</kbd>+<kbd>V</kbd> | Paste from clipboard |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo |
+| <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Redo |
 | <kbd>Ctrl</kbd>+<kbd>/</kbd> | Toggle inline comment |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> | Start of file |
 | <kbd>Ctrl</kbd>+<kbd>↓</kbd> | End of file |
