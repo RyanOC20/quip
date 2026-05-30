@@ -1103,18 +1103,7 @@ void editorRefreshScreen(void) {
         int filerow = E.rowoff+y;
 
         if (filerow >= E.numrows) {
-            if (E.numrows == 0 && y == E.screenrows/3) {
-                char welcome[80];
-                int welcomelen = snprintf(welcome,sizeof(welcome),
-                    "Quip editor -- verison %s\x1b[0K\r\n", QUIP_VERSION);
-                int padding = (E.screencols-welcomelen)/2;
-                if (padding) {
-                    abAppend(&ab,"~",1);
-                    padding--;
-                }
-                while(padding--) abAppend(&ab," ",1);
-                abAppend(&ab,welcome,welcomelen);
-            } else {
+            {
                 abAppend(&ab,"~\x1b[0K\r\n",7);
             }
             continue;
@@ -2130,8 +2119,7 @@ int main(int argc, char **argv) {
     undo_saved = undo_cur;
     E.dirty = 0;
     enableRawMode(STDIN_FILENO);
-    editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-C = copy | Ctrl-X = cut | Ctrl-V = paste | Ctrl-/ = toggle inline comment");
+    editorSetStatusMessage("");
     while(1) {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);
