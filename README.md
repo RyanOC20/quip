@@ -3,6 +3,25 @@ Quip
 
 Quip is a lightweight fork of the Kilo editor that maintains no reliance on libraries, but adds additional modern features.
 
+Build & Install
+---
+
+Build:
+
+    make
+
+Install for the current user (to `~/.local/bin`):
+
+    make install
+
+Install system-wide (all users):
+
+    sudo make install PREFIX=/usr/local
+
+Uninstall (use the same PREFIX you installed with):
+
+    make uninstall
+
 Usage: `quip <filename>`
 
 Shortcuts:
