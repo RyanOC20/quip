@@ -65,7 +65,7 @@
 struct editorSyntax {
     char **filematch;
     char **keywords;
-    char singleline_comment_start[2];
+    char singleline_comment_start[3];
     char multiline_comment_start[3];
     char multiline_comment_end[3];
     int flags;
@@ -76,6 +76,9 @@ typedef struct erow {
     int idx;            /* Row index in the file, zero-based. */
     int size;           /* Size of the row, excluding the null term. */
     int rsize;          /* Size of the rendered row. */
+    int chars_cap;      /* Allocated capacity of 'chars'. */
+    int render_cap;     /* Allocated capacity of 'render'. */
+    int hl_cap;         /* Allocated capacity of 'hl'. */
     char *chars;        /* Row content. */
     char *render;       /* Row content "rendered" for screen (for TABs). */
     unsigned char *hl;  /* Syntax highlight type for each character in render.*/
@@ -94,6 +97,7 @@ struct editorConfig {
     int screenrows; /* Number of rows that we can show */
     int screencols; /* Number of cols that we can show */
     int numrows;    /* Number of rows */
+    int rowcap;     /* Allocated capacity of the row array. */
     int rawmode;    /* Is terminal raw mode enabled? */
     erow *row;      /* Rows */
     int dirty;      /* File modified but not saved. */
@@ -113,9 +117,17 @@ static struct editorConfig E;
 
 /* ================================ Undo/Redo ================================ */
 
+/* Each snapshot stores only the delta from the previous snapshot's serialized
+ * text, not a full copy: replacing bytes [pos, pos+oldlen) of the previous
+ * text with 'new' (newlen bytes) yields this snapshot's text, and the reverse
+ * splice undoes it. 'undo_base' always holds the full text of the snapshot at
+ * 'undo_cur', so any neighbouring snapshot is one splice away. */
 typedef struct editorSnapshot {
-    char *text;
-    int   len;
+    int   pos;
+    char *old;   /* bytes present in the previous snapshot's text */
+    int   oldlen;
+    char *new;   /* bytes present in this snapshot's text */
+    int   newlen;
     int   cx, cy, rowoff, coloff;
 } editorSnapshot;
 
@@ -126,6 +138,8 @@ static int undo_cur   = -1;
 static int undo_count =  0;
 static int undo_saved = -1;
 static int undo_last_insert = 0;
+static char *undo_base = NULL; /* Full serialized text of the snapshot at undo_cur. */
+static int   undo_base_len = 0;
 
 enum KEY_ACTION{
         KEY_NULL = 0,       /* NULL */
@@ -560,6 +574,17 @@ int is_separator(int c) {
     return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];",c) != NULL;
 }
 
+/* Ensure 'buf' can hold at least 'need' bytes, growing its capacity
+ * geometrically. '*cap' tracks the current capacity and is updated in place.
+ * Never shrinks; returns the (possibly reallocated) buffer. */
+static void *growBuf(void *buf, int *cap, int need) {
+    if (need <= *cap) return buf;
+    int nc = *cap ? *cap : 8;
+    while (nc < need) nc *= 2;
+    *cap = nc;
+    return realloc(buf,nc);
+}
+
 /* Return true if the specified row last char is part of a multi line comment
  * that starts at this row or at one before, and does not end at the end
  * of the row but spawns to the next row. */
@@ -573,7 +598,7 @@ int editorRowHasOpenComment(erow *row) {
 /* Set every byte of row->hl (that corresponds to every character in the line)
  * to the right syntax highlight type (HL_* defines). */
 void editorUpdateSyntax(erow *row) {
-    row->hl = realloc(row->hl,row->rsize);
+    row->hl = growBuf(row->hl,&row->hl_cap,row->rsize);
     memset(row->hl,HL_NORMAL,row->rsize);
 
     if (E.syntax == NULL) return; /* No syntax, everything is HL_NORMAL. */
@@ -752,7 +777,6 @@ void editorUpdateRow(erow *row) {
 
    /* Create a version of the row we can directly print on the screen,
      * respecting tabs, substituting non printable characters with '?'. */
-    free(row->render);
     for (j = 0; j < row->size; j++)
         if (row->chars[j] == TAB) tabs++;
 
@@ -763,7 +787,8 @@ void editorUpdateRow(erow *row) {
         exit(1);
     }
 
-    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
+    row->render = growBuf(row->render,&row->render_cap,
+                          row->size + tabs*8 + nonprint*9 + 1);
     idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
@@ -784,17 +809,23 @@ void editorUpdateRow(erow *row) {
  * if required. */
 void editorInsertRow(int at, char *s, size_t len) {
     if (at > E.numrows) return;
-    E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
+    if (E.numrows+1 > E.rowcap) {
+        E.rowcap = E.rowcap ? E.rowcap*2 : 16;
+        E.row = realloc(E.row,sizeof(erow)*E.rowcap);
+    }
     if (at != E.numrows) {
         memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
         for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
     }
     E.row[at].size = len;
+    E.row[at].chars_cap = len+1;
     E.row[at].chars = malloc(len+1);
     memcpy(E.row[at].chars,s,len+1);
     E.row[at].hl = NULL;
+    E.row[at].hl_cap = 0;
     E.row[at].hl_oc = 0;
     E.row[at].render = NULL;
+    E.row[at].render_cap = 0;
     E.row[at].rsize = 0;
     E.row[at].idx = at;
     editorUpdateRow(E.row+at);
@@ -818,7 +849,7 @@ void editorDelRow(int at) {
     row = E.row+at;
     editorFreeRow(row);
     memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
-    for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
+    for (int j = at; j < E.numrows-1; j++) E.row[j].idx--;
     E.numrows--;
     E.dirty++;
 }
@@ -857,14 +888,14 @@ void editorRowInsertChar(erow *row, int at, int c) {
          * current length by more than a single character. */
         int padlen = at-row->size;
         /* In the next line +2 means: new char and null term. */
-        row->chars = realloc(row->chars,row->size+padlen+2);
+        row->chars = growBuf(row->chars,&row->chars_cap,row->size+padlen+2);
         memset(row->chars+row->size,' ',padlen);
         row->chars[row->size+padlen+1] = '\0';
         row->size += padlen+1;
     } else {
         /* If we are in the middle of the string just make space for 1 new
          * char plus the (already existing) null term. */
-        row->chars = realloc(row->chars,row->size+2);
+        row->chars = growBuf(row->chars,&row->chars_cap,row->size+2);
         memmove(row->chars+at+1,row->chars+at,row->size-at+1);
         row->size++;
     }
@@ -875,7 +906,7 @@ void editorRowInsertChar(erow *row, int at, int c) {
 
 /* Append the string 's' at the end of a row */
 void editorRowAppendString(erow *row, char *s, size_t len) {
-    row->chars = realloc(row->chars,row->size+len+1);
+    row->chars = growBuf(row->chars,&row->chars_cap,row->size+len+1);
     memcpy(row->chars+row->size,s,len);
     row->size += len;
     row->chars[row->size] = '\0';
@@ -1053,16 +1084,21 @@ writeerr:
 struct abuf {
     char *b;
     int len;
+    int cap;
 };
 
-#define ABUF_INIT {NULL,0}
+#define ABUF_INIT {NULL,0,0}
 
 void abAppend(struct abuf *ab, const char *s, int len) {
-    char *new = realloc(ab->b,ab->len+len);
-
-    if (new == NULL) return;
-    memcpy(new+ab->len,s,len);
-    ab->b = new;
+    if (ab->len+len > ab->cap) {
+        int nc = ab->cap ? ab->cap : 1024;
+        while (nc < ab->len+len) nc *= 2;
+        char *new = realloc(ab->b,nc);
+        if (new == NULL) return;
+        ab->b = new;
+        ab->cap = nc;
+    }
+    memcpy(ab->b+ab->len,s,len);
     ab->len += len;
 }
 
@@ -1139,16 +1175,24 @@ void editorRefreshScreen(void) {
             char *c = r->render+E.coloff;
             unsigned char *hl = r->hl+E.coloff;
             int j;
+            /* Coalesce consecutive characters that share the same style into a
+             * single append. 'run_start' marks the first not-yet-flushed char;
+             * we flush the pending slice right before emitting any escape. */
+            int run_start = 0;
             for (j = 0; j < len; j++) {
                 int rcol = E.coloff + j;
 
                 /* Handle selection highlight transitions. */
                 if (sel_rcol_start >= 0) {
                     if (!in_selection && rcol >= sel_rcol_start && rcol < sel_rcol_end) {
+                        if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+                        run_start = j;
                         abAppend(&ab,"\x1b[7m",4);
                         in_selection = 1;
                         current_color = -1;
                     } else if (in_selection && rcol >= sel_rcol_end) {
+                        if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+                        run_start = j;
                         abAppend(&ab,"\x1b[27m",5);
                         in_selection = 0;
                         current_color = -1;
@@ -1157,6 +1201,7 @@ void editorRefreshScreen(void) {
 
                 if (hl[j] == HL_NONPRINT) {
                     char sym;
+                    if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                     if (!in_selection) abAppend(&ab,"\x1b[7m",4);
                     if (c[j] <= 26)
                         sym = '@'+c[j];
@@ -1166,23 +1211,30 @@ void editorRefreshScreen(void) {
                     abAppend(&ab,"\x1b[0m",4);
                     current_color = -1;
                     if (in_selection) abAppend(&ab,"\x1b[7m",4);
+                    run_start = j+1; /* 'sym' replaces c[j]; skip it in the run. */
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
+                        if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+                        run_start = j;
                         abAppend(&ab,"\x1b[39m",5);
                         current_color = -1;
                     }
-                    abAppend(&ab,c+j,1);
+                    /* Character joins the pending run. */
                 } else {
                     int color = editorSyntaxToColor(hl[j]);
                     if (color != current_color) {
+                        if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+                        run_start = j;
                         char buf[16];
                         int clen = snprintf(buf,sizeof(buf),"\x1b[%dm",color);
                         current_color = color;
                         abAppend(&ab,buf,clen);
                     }
-                    abAppend(&ab,c+j,1);
+                    /* Character joins the pending run. */
                 }
             }
+            /* Flush the trailing run. */
+            if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
         }
         abAppend(&ab,"\x1b[39m",5);
         if (in_selection) {
@@ -1774,36 +1826,23 @@ static void editorPaste(void) {
 
 /* ========================= Undo / Redo helpers ============================ */
 
-void editorPushSnapshot(void) {
-    /* Discard any redo entries above undo_cur. */
-    for (int i = undo_cur + 1; i < undo_count; i++)
-        free(undo_hist[i].text);
-    undo_count = undo_cur + 1;
-
-    /* If the history is full, drop the oldest entry. */
-    if (undo_count == UNDO_HISTORY_MAX) {
-        free(undo_hist[0].text);
-        memmove(&undo_hist[0], &undo_hist[1],
-                (UNDO_HISTORY_MAX - 1) * sizeof(editorSnapshot));
-        undo_count--;
-        if (undo_cur > 0) undo_cur--;
-        if (undo_saved > 0) undo_saved--;
-        else if (undo_saved == 0) undo_saved = -1;
-    }
-
-    int len;
-    char *text = editorRowsToString(&len);
-    undo_hist[undo_count].text   = text;
-    undo_hist[undo_count].len    = len;
-    undo_hist[undo_count].cx     = E.cx;
-    undo_hist[undo_count].cy     = E.cy;
-    undo_hist[undo_count].rowoff = E.rowoff;
-    undo_hist[undo_count].coloff = E.coloff;
-    undo_cur = undo_count;
-    undo_count++;
+/* Produce src with bytes [pos, pos+rmlen) replaced by 'ins' (inslen bytes).
+ * Returns a freshly allocated, NUL-terminated buffer; *outlen excludes NUL. */
+static char *editorSplice(const char *src, int srclen, int pos, int rmlen,
+                          const char *ins, int inslen, int *outlen) {
+    int nl = srclen - rmlen + inslen;
+    char *out = malloc(nl + 1);
+    memcpy(out, src, pos);
+    memcpy(out + pos, ins, inslen);
+    memcpy(out + pos + inslen, src + pos + rmlen, srclen - pos - rmlen);
+    out[nl] = '\0';
+    *outlen = nl;
+    return out;
 }
 
-void editorRestoreSnapshot(editorSnapshot *snap) {
+/* Tear down the current rows and rebuild them from serialized 'text' (rows
+ * separated by '\n'). Cursor/dirty state is set by the caller. */
+static void editorRebuildRows(char *text, int len) {
     for (int i = 0; i < E.numrows; i++) {
         free(E.row[i].render);
         free(E.row[i].chars);
@@ -1812,10 +1851,10 @@ void editorRestoreSnapshot(editorSnapshot *snap) {
     free(E.row);
     E.row    = NULL;
     E.numrows = 0;
+    E.rowcap  = 0;
 
-    /* Rebuild rows from serialized text (rows separated by '\n'). */
-    char *p   = snap->text;
-    int   rem = snap->len;
+    char *p   = text;
+    int   rem = len;
     while (rem > 0) {
         char *nl      = memchr(p, '\n', rem);
         int   linelen = nl ? (int)(nl - p) : rem;
@@ -1824,13 +1863,65 @@ void editorRestoreSnapshot(editorSnapshot *snap) {
         rem -= linelen + 1;
         p   += linelen + 1;
     }
+}
 
-    E.cx     = snap->cx;
-    E.cy     = snap->cy;
-    E.rowoff = snap->rowoff;
-    E.coloff = snap->coloff;
-    E.dirty  = (undo_cur != undo_saved);
-    E.sel_active = 0;
+void editorPushSnapshot(void) {
+    /* Discard any redo entries above undo_cur. */
+    for (int i = undo_cur + 1; i < undo_count; i++) {
+        free(undo_hist[i].old);
+        free(undo_hist[i].new);
+    }
+    undo_count = undo_cur + 1;
+
+    /* If the history is full, drop the oldest entry. */
+    if (undo_count == UNDO_HISTORY_MAX) {
+        free(undo_hist[0].old);
+        free(undo_hist[0].new);
+        memmove(&undo_hist[0], &undo_hist[1],
+                (UNDO_HISTORY_MAX - 1) * sizeof(editorSnapshot));
+        undo_count--;
+        if (undo_cur > 0) undo_cur--;
+        if (undo_saved > 0) undo_saved--;
+        else if (undo_saved == 0) undo_saved = -1;
+        /* The new head keeps its cursor state but its delta now has no
+         * predecessor and is never applied, so release it. */
+        free(undo_hist[0].old);
+        free(undo_hist[0].new);
+        undo_hist[0].old = NULL; undo_hist[0].oldlen = 0;
+        undo_hist[0].new = NULL; undo_hist[0].newlen = 0;
+        undo_hist[0].pos = 0;
+    }
+
+    /* Serialize the current document and diff it against the base (the text of
+     * the snapshot at undo_cur), storing only the changed middle span. */
+    int curlen;
+    char *cur = editorRowsToString(&curlen);
+
+    int minlen = (undo_base_len < curlen) ? undo_base_len : curlen;
+    int p = 0, s = 0;
+    while (p < minlen && undo_base[p] == cur[p]) p++;
+    while (s < minlen - p &&
+           undo_base[undo_base_len-1-s] == cur[curlen-1-s]) s++;
+
+    editorSnapshot *e = &undo_hist[undo_count];
+    e->pos    = p;
+    e->oldlen = undo_base_len - s - p;
+    e->newlen = curlen - s - p;
+    e->old    = malloc(e->oldlen);
+    memcpy(e->old, undo_base + p, e->oldlen);
+    e->new    = malloc(e->newlen);
+    memcpy(e->new, cur + p, e->newlen);
+    e->cx     = E.cx;
+    e->cy     = E.cy;
+    e->rowoff = E.rowoff;
+    e->coloff = E.coloff;
+    undo_cur = undo_count;
+    undo_count++;
+
+    /* The current document is now the base. */
+    free(undo_base);
+    undo_base     = cur;
+    undo_base_len = curlen;
 }
 
 void editorUndo(void) {
@@ -1838,8 +1929,24 @@ void editorUndo(void) {
         editorSetStatusMessage("Nothing to undo.");
         return;
     }
+    /* Reverse the delta at undo_cur to reconstruct the previous text. */
+    editorSnapshot *e = &undo_hist[undo_cur];
+    int prevlen;
+    char *prev = editorSplice(undo_base, undo_base_len, e->pos, e->newlen,
+                              e->old, e->oldlen, &prevlen);
+    free(undo_base);
+    undo_base     = prev;
+    undo_base_len = prevlen;
     undo_cur--;
-    editorRestoreSnapshot(&undo_hist[undo_cur]);
+
+    editorRebuildRows(undo_base, undo_base_len);
+    editorSnapshot *t = &undo_hist[undo_cur];
+    E.cx     = t->cx;
+    E.cy     = t->cy;
+    E.rowoff = t->rowoff;
+    E.coloff = t->coloff;
+    E.dirty  = (undo_cur != undo_saved);
+    E.sel_active = 0;
     undo_last_insert = 0;
 }
 
@@ -1849,7 +1956,22 @@ void editorRedo(void) {
         return;
     }
     undo_cur++;
-    editorRestoreSnapshot(&undo_hist[undo_cur]);
+    /* Apply the delta at undo_cur to reconstruct the next text. */
+    editorSnapshot *e = &undo_hist[undo_cur];
+    int nextlen;
+    char *next = editorSplice(undo_base, undo_base_len, e->pos, e->oldlen,
+                              e->new, e->newlen, &nextlen);
+    free(undo_base);
+    undo_base     = next;
+    undo_base_len = nextlen;
+
+    editorRebuildRows(undo_base, undo_base_len);
+    E.cx     = e->cx;
+    E.cy     = e->cy;
+    E.rowoff = e->rowoff;
+    E.coloff = e->coloff;
+    E.dirty  = (undo_cur != undo_saved);
+    E.sel_active = 0;
     undo_last_insert = 0;
 }
 
@@ -2097,6 +2219,7 @@ void initEditor(void) {
     E.rowoff = 0;
     E.coloff = 0;
     E.numrows = 0;
+    E.rowcap = 0;
     E.row = NULL;
     E.dirty = 0;
     E.filename = NULL;
