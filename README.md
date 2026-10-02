@@ -30,6 +30,7 @@ Shortcuts:
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
+| <kbd>Ctrl</kbd>+<kbd>E</kbd> | Toggle the file tree sidebar (arrows/click to navigate, <kbd>Enter</kbd> to expand a folder or open a file, <kbd>Esc</kbd> to return to the editor) |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find string in file (<kbd>Esc</kbd> to exit search, arrows to navigate) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy to clipboard |
 | <kbd>Ctrl</kbd>+<kbd>X</kbd> | Cut to clipboard |

@@ -38,11 +38,14 @@
 #include <stdint.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <time.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <fcntl.h>
@@ -111,6 +114,15 @@ struct editorConfig {
     int mouse_cx, mouse_cy; /* Screen position of last mouse click. */
     char *clipboard;      /* Internal clipboard buffer (may contain '\n'). */
     int   clipboard_len;  /* Byte count of clipboard contents. */
+    int ft_open;          /* File-tree sidebar visible? */
+    int ft_width;         /* Columns reserved for the sidebar (0 when closed). */
+    int ft_focus;         /* 1 = keys drive the tree, 0 = keys drive the editor. */
+    struct ftnode *ft_root;  /* Tree root, lazily built on first open. */
+    struct ftnode **ft_vis;  /* Flattened visible nodes, in display order. */
+    int ft_vcount;        /* Number of entries in ft_vis. */
+    int ft_vcap;          /* Allocated capacity of ft_vis. */
+    int ft_sel;           /* Selected index into ft_vis. */
+    int ft_scroll;        /* First ft_vis index shown at the top of the pane. */
 };
 
 static struct editorConfig E;
@@ -143,6 +155,7 @@ static int   undo_base_len = 0;
 
 enum KEY_ACTION{
         KEY_NULL = 0,       /* NULL */
+        CTRL_E = 5,         /* Ctrl-e — toggle file tree */
         CTRL_C = 3,         /* Ctrl-c */
         CTRL_D = 4,         /* Ctrl-d */
         CTRL_F = 6,         /* Ctrl-f */
@@ -193,6 +206,8 @@ enum KEY_ACTION{
         SHIFT_CTRL_ARROW_DOWN,
         SCROLL_UP,
         SCROLL_DOWN,
+        SCROLL_LEFT,
+        SCROLL_RIGHT,
         MOUSE_CLICK,
         MOUSE_DRAG,
         MOUSE_RELEASE
@@ -480,8 +495,18 @@ int editorReadKey(int fd) {
                         if (read(fd,seq+3,1) == 0) return ESC;
                         if (read(fd,seq+4,1) == 0) return ESC;
                         unsigned char mbtn = (unsigned char)seq[2];
-                        if (mbtn == 96) return SCROLL_UP;
-                        if (mbtn == 97) return SCROLL_DOWN;
+                        int b = mbtn - 32;
+                        if (b & 64) {
+                            /* Wheel: bits 0-1 give up/down/left/right. Shift
+                             * turns a vertical wheel into a horizontal one,
+                             * for mice without a tilt wheel. */
+                            int dir = b & 3;
+                            if ((b & 4) && dir < 2) dir += 2;
+                            if (dir == 0) return SCROLL_UP;
+                            if (dir == 1) return SCROLL_DOWN;
+                            if (dir == 2) return SCROLL_LEFT;
+                            return SCROLL_RIGHT;
+                        }
                         E.mouse_cx = (unsigned char)seq[3] - 33;
                         E.mouse_cy = (unsigned char)seq[4] - 33;
                         if (mbtn == 32) return MOUSE_CLICK;   /* left press */
@@ -704,7 +729,8 @@ void editorUpdateSyntax(erow *row) {
                 int kw2 = keywords[j][klen-1] == '|';
                 if (kw2) klen--;
 
-                if (!memcmp(p,keywords[j],klen) &&
+                if (i+klen <= row->rsize &&
+                    !memcmp(p,keywords[j],klen) &&
                     is_separator(*(p+klen)))
                 {
                     /* Keyword */
@@ -1127,6 +1153,10 @@ static void editorSelSetAnchor(void) {
 
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
+/* Defined in the file-tree section below; used while composing the frame. */
+static void ftDrawSidebarRow(struct abuf *ab, int y);
+static void ftBlankCell(struct abuf *ab);
+
 void editorRefreshScreen(void) {
     int y;
     erow *r;
@@ -1137,6 +1167,15 @@ void editorRefreshScreen(void) {
     abAppend(&ab,"\x1b[H",3); /* Go home. */
     for (y = 0; y < E.screenrows; y++) {
         int filerow = E.rowoff+y;
+
+        if (E.ft_open) {
+            /* Draw the sidebar cell for this row, then move to the text start
+             * column so the existing text-drawing code runs unchanged. */
+            char pos[32];
+            int pl = snprintf(pos,sizeof(pos),"\x1b[%d;1H",y+1);
+            abAppend(&ab,pos,pl);
+            ftDrawSidebarRow(&ab,y);
+        }
 
         if (filerow >= E.numrows) {
             {
@@ -1247,6 +1286,7 @@ void editorRefreshScreen(void) {
     }
 
     /* Create a two rows status. First row: */
+    if (E.ft_open) ftBlankCell(&ab); /* continue the divider under the panes */
     abAppend(&ab,"\x1b[0K",4);
     abAppend(&ab,"\x1b[7m",4);
     char status[80], rstatus[80];
@@ -1268,6 +1308,7 @@ void editorRefreshScreen(void) {
     abAppend(&ab,"\x1b[0m\r\n",6);
 
     /* Second row depends on E.statusmsg and the status message update time. */
+    if (E.ft_open) ftBlankCell(&ab);
     abAppend(&ab,"\x1b[0K",4);
     int msglen = strlen(E.statusmsg);
     if (msglen && time(NULL)-E.statusmsg_time < 5)
@@ -1277,17 +1318,26 @@ void editorRefreshScreen(void) {
      * at which the cursor is displayed may be different compared to 'E.cx'
      * because of TABs. */
     int j;
-    int cx = 1;
-    int filerow = E.rowoff+E.cy;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    if (row) {
-        for (j = E.coloff; j < (E.cx+E.coloff); j++) {
-            if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
-            cx++;
+    if (E.ft_open && E.ft_focus) {
+        /* Park the hardware cursor on the selected sidebar row. */
+        int srow = E.ft_sel - E.ft_scroll;
+        if (srow < 0) srow = 0;
+        if (srow >= E.screenrows) srow = E.screenrows-1;
+        snprintf(buf,sizeof(buf),"\x1b[%d;1H",srow+1);
+        abAppend(&ab,buf,strlen(buf));
+    } else {
+        int cx = 1 + E.ft_width; /* shift right past the sidebar, if any */
+        int filerow = E.rowoff+E.cy;
+        erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+        if (row) {
+            for (j = E.coloff; j < (E.cx+E.coloff); j++) {
+                if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
+                cx++;
+            }
         }
+        snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx);
+        abAppend(&ab,buf,strlen(buf));
     }
-    snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx);
-    abAppend(&ab,buf,strlen(buf));
     abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
     write(STDOUT_FILENO,ab.b,ab.len);
     abFree(&ab);
@@ -1404,6 +1454,16 @@ void editorFind(int fd) {
 
 /* ========================= Editor events handling  ======================== */
 
+static void editorSetCol(int new_col) {
+    if (new_col < E.screencols) {
+        E.cx = new_col;
+        E.coloff = 0;
+    } else {
+        E.coloff = new_col - E.screencols + 1;
+        E.cx = E.screencols - 1;
+    }
+}
+
 /* Handle cursor position change because arrow keys were pressed. */
 void editorMoveCursor(int key) {
     int filerow = E.rowoff+E.cy;
@@ -1471,20 +1531,8 @@ void editorMoveCursor(int key) {
     rowlen = row ? row->size : 0;
     if (filecol > rowlen) {
         E.cx -= filecol-rowlen;
-        if (E.cx < 0) {
-            E.coloff += E.cx;
-            E.cx = 0;
-        }
-    }
-}
-
-static void editorSetCol(int new_col) {
-    if (new_col < E.screencols) {
-        E.cx = new_col;
-        E.coloff = 0;
-    } else {
-        E.coloff = new_col - E.screencols + 1;
-        E.cx = E.screencols - 1;
+        /* The line ends left of the view: scroll back so it is visible. */
+        if (E.cx < 0) editorSetCol(rowlen);
     }
 }
 
@@ -1623,23 +1671,55 @@ void editorDeleteSelection(void) {
     E.sel_active = 0;
 }
 
-static void editorClampCursorCol(void) {
-    int file_row = E.rowoff + E.cy;
-    if (file_row >= E.numrows) return;
-    erow *row = &E.row[file_row];
-    int cur_col = E.coloff + E.cx;
-    if (cur_col > row->size) editorSetCol(row->size);
+/* Put the cursor as close to file column 'col' as possible without moving
+ * the view. If the cursor's line ends left of the view, the cursor parks at
+ * the left edge past the end of the line, and the next key that acts on it
+ * snaps it back (see editorProcessKeypress). */
+static void editorPlaceCursorInView(int col) {
+    int filerow = E.rowoff + E.cy;
+    int len = (filerow < E.numrows) ? E.row[filerow].size : 0;
+    if (col > len) col = len;
+    if (col < E.coloff) col = E.coloff;
+    if (col > E.coloff + E.screencols - 1) col = E.coloff + E.screencols - 1;
+    E.cx = col - E.coloff;
+}
+
+/* Scroll the view sideways by 'delta' columns, stopping once the end of the
+ * longest line on screen is in view. The cursor keeps its column when it can
+ * and is otherwise dragged along with the view. */
+static void editorScrollCols(int delta) {
+    int col = E.coloff + E.cx;
+    int maxlen = 0;
+    for (int y = 0; y < E.screenrows && E.rowoff + y < E.numrows; y++) {
+        int len = E.row[E.rowoff + y].rsize;
+        if (len > maxlen) maxlen = len;
+    }
+    int limit = maxlen - E.screencols + 1; /* +1 leaves room for the cursor */
+    int coloff = E.coloff + delta;
+    if (delta > 0 && coloff > limit) coloff = (limit > E.coloff) ? limit : E.coloff;
+    if (coloff < 0) coloff = 0;
+    E.coloff = coloff;
+    editorPlaceCursorInView(col);
+}
+
+/* True if the cursor sits past the end of its line, which only a scroll can
+ * cause. */
+static int editorCursorPastEnd(void) {
+    int filerow = E.rowoff + E.cy;
+    int len = (filerow < E.numrows) ? E.row[filerow].size : 0;
+    return E.coloff + E.cx > len;
 }
 
 /* Moves cursor to E.mouse_cx/cy, converting render column → file column. */
 static void editorMouseSetCursor(void) {
     if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
         E.cy = E.mouse_cy;
-    if (E.mouse_cx >= 0 && E.mouse_cx < E.screencols) {
+    int text_cx = E.mouse_cx - E.ft_width; /* physical col → text col */
+    if (text_cx >= 0 && text_cx < E.screencols) {
         int file_row = E.rowoff + E.cy;
         if (file_row < E.numrows) {
             erow *row = &E.row[file_row];
-            int rcol = E.coloff + E.mouse_cx;
+            int rcol = E.coloff + text_cx;
             int fc = 0, rc = 0;
             while (fc < row->size && rc < rcol) {
                 if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
@@ -1842,16 +1922,21 @@ static char *editorSplice(const char *src, int srclen, int pos, int rmlen,
 
 /* Tear down the current rows and rebuild them from serialized 'text' (rows
  * separated by '\n'). Cursor/dirty state is set by the caller. */
-static void editorRebuildRows(char *text, int len) {
+/* Free every row buffer and reset the row array to empty. */
+static void editorFreeAllRows(void) {
     for (int i = 0; i < E.numrows; i++) {
         free(E.row[i].render);
         free(E.row[i].chars);
         free(E.row[i].hl);
     }
     free(E.row);
-    E.row    = NULL;
+    E.row     = NULL;
     E.numrows = 0;
     E.rowcap  = 0;
+}
+
+static void editorRebuildRows(char *text, int len) {
+    editorFreeAllRows();
 
     char *p   = text;
     int   rem = len;
@@ -1975,18 +2060,347 @@ void editorRedo(void) {
     undo_last_insert = 0;
 }
 
+/* ================================ File tree =============================== */
+
+/* A node in the file-tree sidebar. Directories load their children lazily the
+ * first time they are expanded, so a huge project is never walked eagerly. */
+typedef struct ftnode {
+    char *name;              /* Basename shown in the sidebar. */
+    char *path;              /* Full path, used to open / descend. */
+    int   is_dir;
+    int   depth;             /* Indentation level (root = 0). */
+    int   expanded;          /* Directories only. */
+    int   loaded;            /* Children already read? */
+    struct ftnode **child;   /* Child node pointers. */
+    int   nchild;
+} ftnode;
+
+#define FT_WIDTH 30      /* Sidebar width in columns (including the divider). */
+#define FT_MIN_TEXT 20   /* Minimum text columns; refuse to open below this. */
+
+int editorLoadFile(const char *path);
+void updateWindowSize(void);
+
+/* Sort directories before files, then case-insensitively by name. */
+static int ftCmp(const void *a, const void *b) {
+    const ftnode *x = *(const ftnode *const *)a;
+    const ftnode *y = *(const ftnode *const *)b;
+    if (x->is_dir != y->is_dir) return y->is_dir - x->is_dir;
+    return strcasecmp(x->name, y->name);
+}
+
+/* Read the entries of 'dir' into dir->child. Marks the node loaded either way;
+ * on failure it just stays childless and reports via the status message. */
+static void ftReadDir(ftnode *dir) {
+    dir->loaded = 1;
+    DIR *d = opendir(dir->path);
+    if (!d) {
+        editorSetStatusMessage("Can't open %s: %s", dir->path, strerror(errno));
+        return;
+    }
+    int cap = 0;
+    struct dirent *de;
+    size_t plen = strlen(dir->path);
+    int rootslash = (plen == 1 && dir->path[0] == '/'); /* avoid "//name" */
+    while ((de = readdir(d)) != NULL) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        ftnode *c = calloc(1, sizeof(ftnode));
+        size_t nlen = strlen(de->d_name);
+        c->name = malloc(nlen+1);
+        memcpy(c->name, de->d_name, nlen+1);
+        c->path = malloc(plen + (rootslash ? 0 : 1) + nlen + 1);
+        memcpy(c->path, dir->path, plen);
+        size_t off = plen;
+        if (!rootslash) c->path[off++] = '/';
+        memcpy(c->path + off, de->d_name, nlen+1);
+        c->depth = dir->depth + 1;
+        struct stat st;
+        c->is_dir = (stat(c->path, &st) == 0 && S_ISDIR(st.st_mode));
+        dir->child = growBuf(dir->child, &cap,
+                             (dir->nchild+1) * (int)sizeof(ftnode *));
+        dir->child[dir->nchild++] = c;
+    }
+    closedir(d);
+    if (dir->nchild)
+        qsort(dir->child, dir->nchild, sizeof(ftnode *), ftCmp);
+}
+
+/* Recursively free a node and its subtree. */
+static void ftFreeNode(ftnode *n) {
+    if (!n) return;
+    for (int i = 0; i < n->nchild; i++) ftFreeNode(n->child[i]);
+    free(n->child);
+    free(n->name);
+    free(n->path);
+    free(n);
+}
+
+/* Build the tree root from the directory containing 'filepath'. */
+static void ftBuildRoot(const char *filepath) {
+    char *dirpath;
+    const char *slash = strrchr(filepath, '/');
+    if (!slash) {
+        dirpath = malloc(2); dirpath[0] = '.'; dirpath[1] = '\0';
+    } else if (slash == filepath) {
+        dirpath = malloc(2); dirpath[0] = '/'; dirpath[1] = '\0';
+    } else {
+        size_t n = slash - filepath;
+        dirpath = malloc(n+1); memcpy(dirpath, filepath, n); dirpath[n] = '\0';
+    }
+    ftnode *root = calloc(1, sizeof(ftnode));
+    root->path = dirpath;
+    const char *rs = strrchr(dirpath, '/');
+    const char *base = (rs && rs[1]) ? rs+1 : dirpath;
+    size_t blen = strlen(base);
+    root->name = malloc(blen+1); memcpy(root->name, base, blen+1);
+    root->is_dir = 1;
+    root->depth = 0;
+    root->expanded = 1;
+    ftReadDir(root);
+    E.ft_root = root;
+}
+
+/* Append one node pointer to the flattened visible list. */
+static void ftAppendVis(ftnode *n) {
+    E.ft_vis = growBuf(E.ft_vis, &E.ft_vcap,
+                       (E.ft_vcount+1) * (int)sizeof(ftnode *));
+    E.ft_vis[E.ft_vcount++] = n;
+}
+
+static void ftFlattenNode(ftnode *n) {
+    ftAppendVis(n);
+    if (n->is_dir && n->expanded)
+        for (int i = 0; i < n->nchild; i++) ftFlattenNode(n->child[i]);
+}
+
+/* Rebuild ft_vis from the tree, honouring each directory's expanded flag. */
+static void ftFlatten(void) {
+    E.ft_vcount = 0;
+    if (E.ft_root) ftFlattenNode(E.ft_root);
+    if (E.ft_sel >= E.ft_vcount) E.ft_sel = E.ft_vcount ? E.ft_vcount-1 : 0;
+    if (E.ft_sel < 0) E.ft_sel = 0;
+}
+
+/* Draw a blank sidebar cell (spaces + divider) of exactly ft_width columns. */
+static void ftBlankCell(struct abuf *ab) {
+    char buf[FT_WIDTH];
+    int i;
+    for (i = 0; i < E.ft_width-1; i++) buf[i] = ' ';
+    buf[E.ft_width-1] = '|';
+    abAppend(ab, buf, E.ft_width);
+}
+
+/* Draw the sidebar cell for screen row 'y' into the append buffer. */
+static void ftDrawSidebarRow(struct abuf *ab, int y) {
+    int W = E.ft_width - 1;   /* Text columns; last column is the divider. */
+    char line[FT_WIDTH];
+    int n = 0;
+    int idx = E.ft_scroll + y;
+    int has = (idx >= 0 && idx < E.ft_vcount);
+    ftnode *node = has ? E.ft_vis[idx] : NULL;
+
+    if (has) {
+        int indent = node->depth * 2;
+        if (indent > W-3) indent = W-3;
+        if (indent < 0) indent = 0;
+        while (n < indent && n < W) line[n++] = ' ';
+        if (n < W) line[n++] = node->is_dir ? (node->expanded ? '-' : '+') : ' ';
+        if (n < W) line[n++] = ' ';
+        const char *p = node->name;
+        while (*p && n < W) line[n++] = *p++;
+        if (*p && W > 0) line[W-1] = '~'; /* name was truncated */
+    }
+    while (n < W) line[n++] = ' ';
+
+    int selected = (has && idx == E.ft_sel);
+    if (selected)               abAppend(ab, "\x1b[7m", 4);
+    else if (has && node->is_dir) abAppend(ab, "\x1b[1;34m", 7);
+    abAppend(ab, line, W);
+    if (selected || (has && node->is_dir)) abAppend(ab, "\x1b[0m", 4);
+    abAppend(ab, "|", 1);
+}
+
+/* Move the selection by 'delta' rows, keeping it inside the visible pane. */
+static void ftMoveSel(int delta) {
+    if (!E.ft_vcount) return;
+    E.ft_sel += delta;
+    if (E.ft_sel < 0) E.ft_sel = 0;
+    if (E.ft_sel >= E.ft_vcount) E.ft_sel = E.ft_vcount-1;
+    if (E.ft_sel < E.ft_scroll) E.ft_scroll = E.ft_sel;
+    if (E.ft_sel >= E.ft_scroll + E.screenrows)
+        E.ft_scroll = E.ft_sel - E.screenrows + 1;
+}
+
+/* Enter / right: expand-or-collapse a directory, or open a file. */
+static void ftActivate(void) {
+    if (E.ft_sel < 0 || E.ft_sel >= E.ft_vcount) return;
+    ftnode *n = E.ft_vis[E.ft_sel];
+    if (n->is_dir) {
+        n->expanded = !n->expanded;
+        if (n->expanded && !n->loaded) ftReadDir(n);
+        ftFlatten();
+    } else {
+        editorLoadFile(n->path);
+    }
+}
+
+/* Left: collapse an expanded directory, else jump to the parent entry. */
+static void ftCollapse(void) {
+    if (E.ft_sel < 0 || E.ft_sel >= E.ft_vcount) return;
+    ftnode *n = E.ft_vis[E.ft_sel];
+    if (n->is_dir && n->expanded) {
+        n->expanded = 0;
+        ftFlatten();
+        return;
+    }
+    for (int i = E.ft_sel-1; i >= 0; i--) {
+        if (E.ft_vis[i]->depth < n->depth) { E.ft_sel = i; break; }
+    }
+    if (E.ft_sel < E.ft_scroll) E.ft_scroll = E.ft_sel;
+}
+
+/* Show or hide the sidebar, recomputing the text-area geometry. */
+static void ftToggle(void) {
+    if (!E.ft_open) {
+        int phys = E.screencols; /* ft_width is 0 while closed. */
+        if (phys < FT_WIDTH + FT_MIN_TEXT) {
+            editorSetStatusMessage("Terminal too narrow for the file tree");
+            return;
+        }
+        if (!E.ft_root) ftBuildRoot(E.filename);
+        E.ft_width  = FT_WIDTH;
+        E.ft_open   = 1;
+        E.ft_focus  = 1;
+        E.ft_scroll = 0;
+        ftFlatten();
+    } else {
+        E.ft_open  = 0;
+        E.ft_focus = 0;
+        E.ft_width = 0;
+    }
+    updateWindowSize();
+    /* Clamp the editor's horizontal position into the new text width. */
+    if (E.cx >= E.screencols) {
+        E.coloff += E.cx - (E.screencols-1);
+        E.cx = E.screencols-1;
+    }
+    if (E.cx < 0) E.cx = 0;
+    if (E.coloff < 0) E.coloff = 0;
+}
+
+/* Handle a key while the sidebar has focus. Returns 1 if the key was consumed. */
+static int ftHandleKey(int c) {
+    switch (c) {
+    case ARROW_UP:   ftMoveSel(-1); return 1;
+    case ARROW_DOWN: ftMoveSel(1);  return 1;
+    case PAGE_UP:    ftMoveSel(-E.screenrows); return 1;
+    case PAGE_DOWN:  ftMoveSel(E.screenrows);  return 1;
+    case SCROLL_UP:   ftMoveSel(-3); return 1;
+    case SCROLL_DOWN: ftMoveSel(3);  return 1;
+    case ENTER:
+    case ARROW_RIGHT: ftActivate(); return 1;
+    case ARROW_LEFT:  ftCollapse(); return 1;
+    case ESC: E.ft_focus = 0; return 1;
+    default: return 0;
+    }
+}
+
+/* Replace the current buffer with the file at 'path'. If the buffer has
+ * unsaved changes, ask for confirmation first (a small modal, in the style of
+ * editorFind). Returns 0 on success, 1 if the load was declined or failed. */
+int editorLoadFile(const char *path) {
+    if (E.dirty) {
+        editorSetStatusMessage("Discard unsaved changes? (y/N)");
+        editorRefreshScreen();
+        int c = editorReadKey(STDIN_FILENO);
+        if (c != 'y' && c != 'Y') {
+            editorSetStatusMessage("");
+            return 1;
+        }
+    }
+
+    /* Tear down the current document and its undo history. */
+    editorFreeAllRows();
+    for (int i = 0; i < undo_count; i++) {
+        free(undo_hist[i].old);
+        free(undo_hist[i].new);
+    }
+    undo_cur = -1;
+    undo_count = 0;
+    undo_saved = -1;
+    undo_last_insert = 0;
+    free(undo_base);
+    undo_base = NULL;
+    undo_base_len = 0;
+
+    E.cx = E.cy = E.rowoff = E.coloff = 0;
+    E.sel_active = 0;
+
+    char *p = strdup(path); /* editorOpen/SelectSyntax take char*. */
+    editorSelectSyntaxHighlight(p);
+    editorOpen(p);
+    free(p);
+
+    /* Seed the undo baseline, exactly as main() does at startup. */
+    editorPushSnapshot();
+    undo_saved = undo_cur;
+    E.dirty = 0;
+
+    E.ft_focus = 0; /* Hand focus to the editor so the user can type. */
+    editorSetStatusMessage("");
+    return 0;
+}
+
 /* ========================================================================= */
 
 /* Process events arriving from the standard input, which is, the user
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES 3
+#define QUIP_HSCROLL_COLS 4 /* Columns moved per horizontal wheel step. */
 void editorProcessKeypress(int fd) {
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
     static int quit_times = QUIP_QUIT_TIMES;
 
     int c = editorReadKey(fd);
+
+    /* While the sidebar has focus, navigation keys drive the tree. Ctrl-E
+     * closes it and Ctrl-Q still quits; everything else is consumed. */
+    if (E.ft_open && E.ft_focus) {
+        if (c == CTRL_E) { ftToggle(); return; }
+        if (c != CTRL_Q && c != SCROLL_LEFT && c != SCROLL_RIGHT) {
+            ftHandleKey(c);
+            return;
+        }
+    }
+
+    /* After a sideways scroll the cursor may be parked past the end of a
+     * short line. Snap it back to the line end before a key acts on it, so
+     * edits and selections never see a column beyond the line. Vertical
+     * motion, scrolling, mouse events and view-neutral commands keep the
+     * view where the user put it. */
+    if (editorCursorPastEnd()) {
+        switch (c) {
+        case KEY_NULL: case CTRL_Q: case CTRL_S: case CTRL_E: case CTRL_F:
+        case CTRL_L:
+        case ARROW_UP: case ARROW_DOWN: case PAGE_UP: case PAGE_DOWN:
+        case ALT_ARROW_UP: case ALT_ARROW_DOWN:
+        case SCROLL_UP: case SCROLL_DOWN: case SCROLL_LEFT: case SCROLL_RIGHT:
+        case MOUSE_CLICK: case MOUSE_DRAG: case MOUSE_RELEASE:
+            break;
+        default: {
+            int filerow = E.rowoff + E.cy;
+            editorSetCol(filerow < E.numrows ? E.row[filerow].size : 0);
+            break;
+        }
+        }
+    }
+
     switch(c) {
+    case CTRL_E:        /* Ctrl-e — toggle / focus the file tree */
+        if (E.ft_open) E.ft_focus = 1;
+        else ftToggle();
+        break;
     case CTRL_Z:        /* Ctrl-z — undo */
         editorUndo();
         break;
@@ -2024,6 +2438,7 @@ void editorProcessKeypress(int fd) {
             quit_times--;
             return;
         }
+        ftFreeNode(E.ft_root);
         exit(0);
         break;
     case CTRL_S:        /* Ctrl-s */
@@ -2049,6 +2464,14 @@ void editorProcessKeypress(int fd) {
         break;
     case MOUSE_CLICK:
         undo_last_insert = 0;
+        if (E.ft_open && E.mouse_cx < E.ft_width) {
+            /* Click inside the sidebar: focus it and act on the row. */
+            E.ft_focus = 1;
+            int idx = E.ft_scroll + E.mouse_cy;
+            if (idx >= 0 && idx < E.ft_vcount) { E.ft_sel = idx; ftActivate(); }
+            break;
+        }
+        E.ft_focus = 0;
         editorMouseSetCursor();
         E.sel_active     = 1;
         E.sel_anchor_row = E.rowoff + E.cy;
@@ -2058,6 +2481,7 @@ void editorProcessKeypress(int fd) {
         if (E.sel_active) editorMouseSetCursor();
         break;
     case MOUSE_RELEASE:
+        if (E.ft_open && E.mouse_cx < E.ft_width) break;
         editorMouseSetCursor();
         /* If anchor == cursor the user just clicked; clear the selection. */
         if (E.sel_anchor_row == E.rowoff + E.cy &&
@@ -2073,7 +2497,7 @@ void editorProcessKeypress(int fd) {
         E.cy = file_row - E.rowoff;
         if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
         if (E.cy < 0) E.cy = 0;
-        editorClampCursorCol();
+        editorPlaceCursorInView(E.coloff + E.cx);
         break;
     }
     case SCROLL_DOWN: {
@@ -2086,9 +2510,19 @@ void editorProcessKeypress(int fd) {
         E.cy = file_row - E.rowoff;
         if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
         if (E.cy < 0) E.cy = 0;
-        editorClampCursorCol();
+        editorPlaceCursorInView(E.coloff + E.cx);
         break;
     }
+    case SCROLL_LEFT:
+        undo_last_insert = 0;
+        editorScrollCols(-QUIP_HSCROLL_COLS);
+        break;
+    case SCROLL_RIGHT:
+        undo_last_insert = 0;
+        editorScrollCols(QUIP_HSCROLL_COLS);
+        break;
+    case KEY_NULL:
+        break;
     case PAGE_UP:
     case PAGE_DOWN:
         undo_last_insert = 0;
@@ -2204,12 +2638,15 @@ void updateWindowSize(void) {
         exit(1);
     }
     E.screenrows -= 2; /* Get room for status bar. */
+    E.screencols -= E.ft_width; /* Reserve columns for the file-tree sidebar. */
 }
 
 void handleSigWinCh(int unused __attribute__((unused))) {
     updateWindowSize();
     if (E.cy > E.screenrows) E.cy = E.screenrows - 1;
     if (E.cx > E.screencols) E.cx = E.screencols - 1;
+    if (E.ft_scroll > E.ft_vcount) E.ft_scroll = E.ft_vcount ? E.ft_vcount-1 : 0;
+    if (E.coloff < 0) E.coloff = 0;
     editorRefreshScreen();
 }
 
@@ -2225,6 +2662,15 @@ void initEditor(void) {
     E.filename = NULL;
     E.syntax = NULL;
     E.sel_active = 0;
+    E.ft_open = 0;
+    E.ft_width = 0;
+    E.ft_focus = 0;
+    E.ft_root = NULL;
+    E.ft_vis = NULL;
+    E.ft_vcount = 0;
+    E.ft_vcap = 0;
+    E.ft_sel = 0;
+    E.ft_scroll = 0;
     updateWindowSize();
     signal(SIGWINCH, handleSigWinCh);
 }
