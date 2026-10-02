@@ -280,6 +280,7 @@ void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
         write(STDOUT_FILENO, "\x1b[?1002l", 8); /* disable button-event mouse reporting */
+        write(STDOUT_FILENO, "\x1b[0 q", 5);    /* restore the terminal's default cursor */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -318,6 +319,7 @@ int enableRawMode(int fd) {
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
     write(STDOUT_FILENO, "\x1b[?1002h", 8); /* enable button-event mouse reporting */
+    write(STDOUT_FILENO, "\x1b[5 q", 5);    /* blinking bar cursor */
     return 0;
 
 fatal:
