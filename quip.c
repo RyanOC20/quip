@@ -281,9 +281,27 @@ void disableRawMode(int fd) {
     if (E.rawmode) {
         write(STDOUT_FILENO, "\x1b[?1002l", 8); /* disable button-event mouse reporting */
         write(STDOUT_FILENO, "\x1b[0 q", 5);    /* restore the terminal's default cursor */
+        write(STDOUT_FILENO, "\x1b[?1049l", 8); /* back to the shell's screen */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
+}
+
+/* Leave the editor screen, then report a fatal error where the user can
+ * still read it after exit. 'err' is an errno value, or 0 for none. */
+static void editorDie(const char *msg, int err) {
+    disableRawMode(STDIN_FILENO);
+    if (err) fprintf(stderr, "%s: %s\n", msg, strerror(err));
+    else     fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
+
+/* Restore the terminal when killed, then die by the same signal. Only
+ * async-signal-safe calls (write, tcsetattr) are made on the way. */
+static void handleSigTerm(int sig) {
+    disableRawMode(STDIN_FILENO);
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 /* Called at exit to avoid remaining in raw mode. */
@@ -318,6 +336,12 @@ int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
+    /* Draw on the alternate screen so quitting restores the shell's screen
+     * instead of leaving the file's contents behind. */
+    write(STDOUT_FILENO, "\x1b[?1049h", 8);
+    signal(SIGTERM, handleSigTerm);
+    signal(SIGHUP, handleSigTerm);
+    signal(SIGINT, handleSigTerm);
     write(STDOUT_FILENO, "\x1b[?1002h", 8); /* enable button-event mouse reporting */
     write(STDOUT_FILENO, "\x1b[5 q", 5);    /* blinking bar cursor */
     return 0;
@@ -811,8 +835,7 @@ void editorUpdateRow(erow *row) {
     unsigned long long allocsize =
         (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
     if (allocsize > UINT32_MAX) {
-        printf("Some line of the edited file is too long for quip\n");
-        exit(1);
+        editorDie("Some line of the edited file is too long for quip", 0);
     }
 
     row->render = growBuf(row->render,&row->render_cap,
@@ -1058,8 +1081,7 @@ int editorOpen(char *filename) {
     fp = fopen(filename,"r");
     if (!fp) {
         if (errno != ENOENT) {
-            perror("Opening file");
-            exit(1);
+            editorDie("Opening file", errno);
         }
         return 1;
     }
@@ -2311,6 +2333,15 @@ static int ftHandleKey(int c) {
  * unsaved changes, ask for confirmation first (a small modal, in the style of
  * editorFind). Returns 0 on success, 1 if the load was declined or failed. */
 int editorLoadFile(const char *path) {
+    /* Check readability before anything is discarded: editorOpen treats an
+     * unreadable file as fatal, which is right at startup but not here. */
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        editorSetStatusMessage("Can't open %s: %s", path, strerror(errno));
+        return 1;
+    }
+    fclose(fp);
+
     if (E.dirty) {
         editorSetStatusMessage("Discard unsaved changes? (y/N)");
         editorRefreshScreen();
@@ -2636,8 +2667,8 @@ int editorFileWasModified(void) {
 void updateWindowSize(void) {
     if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
                       &E.screenrows,&E.screencols) == -1) {
-        perror("Unable to query the screen for size (columns / rows)");
-        exit(1);
+        editorDie("Unable to query the screen for size (columns / rows)",
+                  errno);
     }
     E.screenrows -= 2; /* Get room for status bar. */
     E.screencols -= E.ft_width; /* Reserve columns for the file-tree sidebar. */
