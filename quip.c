@@ -98,7 +98,9 @@ struct editorConfig {
     int rowoff;     /* Offset of row displayed. */
     int coloff;     /* Offset of column displayed. */
     int screenrows; /* Number of rows that we can show */
-    int screencols; /* Number of cols that we can show */
+    int screencols; /* Number of text cols we can show (excludes sidebar/gutter). */
+    int termcols;   /* Physical terminal width in columns. */
+    int ln_width;   /* Columns reserved for the line number gutter (0 if hidden). */
     int numrows;    /* Number of rows */
     int rowcap;     /* Allocated capacity of the row array. */
     int rawmode;    /* Is terminal raw mode enabled? */
@@ -843,8 +845,7 @@ void editorUpdateRow(erow *row) {
     idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
-            row->render[idx++] = ' ';
-            while((idx+1) % 8 != 0) row->render[idx++] = ' ';
+            do row->render[idx++] = ' '; while (idx % 8 != 0);
         } else {
             row->render[idx++] = row->chars[j];
         }
@@ -1165,6 +1166,18 @@ int editorCharToRenderCol(erow *row, int char_col) {
     return rcol;
 }
 
+/* Inverse of editorCharToRenderCol: the char column whose rendering covers
+ * render column 'rcol' (a click inside a TAB lands just after it). */
+int editorRenderToCharCol(erow *row, int rcol) {
+    int fc = 0, rc = 0;
+    while (fc < row->size && rc < rcol) {
+        if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
+        else rc++;
+        fc++;
+    }
+    return fc;
+}
+
 void editorSelClear(void) { E.sel_active = 0; }
 
 static void editorSelSetAnchor(void) {
@@ -1181,12 +1194,54 @@ static void editorSelSetAnchor(void) {
 static void ftDrawSidebarRow(struct abuf *ab, int y);
 static void ftBlankCell(struct abuf *ab);
 
+#define LN_MIN_DIGITS 3  /* Gutter fits at least this many digits. */
+#define LN_MIN_TEXT 20   /* Hide the gutter rather than leave fewer text cols. */
+
+/* Recompute the text width from the terminal width, the sidebar and the line
+ * number gutter, whose width follows the number of digits in the last line
+ * number. 'E.screencols' always means text columns, so the scroll math never
+ * needs to know about either pane. */
+static void editorUpdateGeometry(void) {
+    int digits = 1;
+    for (int n = E.numrows; n >= 10; n /= 10) digits++;
+    if (digits < LN_MIN_DIGITS) digits = LN_MIN_DIGITS;
+    int avail = E.termcols - E.ft_width;
+    E.ln_width = (avail - (digits+1) >= LN_MIN_TEXT) ? digits+1 : 0;
+    E.screencols = avail - E.ln_width;
+    if (E.screencols < 1) E.screencols = 1;
+    /* Keep the cursor inside the (possibly narrower) text area. */
+    if (E.cx >= E.screencols) {
+        E.coloff += E.cx - (E.screencols-1);
+        E.cx = E.screencols-1;
+    }
+    if (E.cx < 0) E.cx = 0;
+    if (E.coloff < 0) E.coloff = 0;
+}
+
+/* Draw the gutter cell for 'filerow': its right-aligned line number and a
+ * separating space, with the cursor's line brighter than the rest. Rows past
+ * the end of the file get a '~' marker instead. */
+static void editorDrawGutter(struct abuf *ab, int filerow) {
+    char buf[32];
+    if (filerow >= E.numrows) {
+        int len = snprintf(buf,sizeof(buf),"%-*s",E.ln_width,"~");
+        abAppend(ab,buf,len);
+        return;
+    }
+    int current = (filerow == E.rowoff+E.cy);
+    abAppend(ab,current ? "\x1b[1m" : "\x1b[90m",current ? 4 : 5);
+    int len = snprintf(buf,sizeof(buf),"%*d ",E.ln_width-1,filerow+1);
+    abAppend(ab,buf,len);
+    abAppend(ab,"\x1b[0m",4);
+}
+
 void editorRefreshScreen(void) {
     int y;
     erow *r;
     char buf[32];
     struct abuf ab = ABUF_INIT;
 
+    editorUpdateGeometry();
     abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
     abAppend(&ab,"\x1b[H",3); /* Go home. */
     for (y = 0; y < E.screenrows; y++) {
@@ -1201,10 +1256,11 @@ void editorRefreshScreen(void) {
             ftDrawSidebarRow(&ab,y);
         }
 
+        if (E.ln_width) editorDrawGutter(&ab,filerow);
+
         if (filerow >= E.numrows) {
-            {
-                abAppend(&ab,"~\x1b[0K\r\n",7);
-            }
+            if (!E.ln_width) abAppend(&ab,"~",1);
+            abAppend(&ab,"\x1b[0K\r\n",6);
             continue;
         }
 
@@ -1309,7 +1365,8 @@ void editorRefreshScreen(void) {
         abAppend(&ab,"\r\n",2);
     }
 
-    /* Create a two rows status. First row: */
+    /* Create a two rows status, spanning the gutter and text. First row: */
+    int statuscols = E.ln_width + E.screencols;
     if (E.ft_open) ftBlankCell(&ab); /* continue the divider under the panes */
     abAppend(&ab,"\x1b[0K",4);
     abAppend(&ab,"\x1b[7m",4);
@@ -1318,10 +1375,10 @@ void editorRefreshScreen(void) {
         E.filename, E.numrows, E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus),
         "%d/%d",E.rowoff+E.cy+1,E.numrows);
-    if (len > E.screencols) len = E.screencols;
+    if (len > statuscols) len = statuscols;
     abAppend(&ab,status,len);
-    while(len < E.screencols) {
-        if (E.screencols - len == rlen) {
+    while(len < statuscols) {
+        if (statuscols - len == rlen) {
             abAppend(&ab,rstatus,rlen);
             break;
         } else {
@@ -1336,12 +1393,11 @@ void editorRefreshScreen(void) {
     abAppend(&ab,"\x1b[0K",4);
     int msglen = strlen(E.statusmsg);
     if (msglen && time(NULL)-E.statusmsg_time < 5)
-        abAppend(&ab,E.statusmsg,msglen <= E.screencols ? msglen : E.screencols);
+        abAppend(&ab,E.statusmsg,msglen <= statuscols ? msglen : statuscols);
 
     /* Put cursor at its current position. Note that the horizontal position
      * at which the cursor is displayed may be different compared to 'E.cx'
      * because of TABs. */
-    int j;
     if (E.ft_open && E.ft_focus) {
         /* Park the hardware cursor on the selected sidebar row. */
         int srow = E.ft_sel - E.ft_scroll;
@@ -1350,16 +1406,18 @@ void editorRefreshScreen(void) {
         snprintf(buf,sizeof(buf),"\x1b[%d;1H",srow+1);
         abAppend(&ab,buf,strlen(buf));
     } else {
-        int cx = 1 + E.ft_width; /* shift right past the sidebar, if any */
+        /* The text is drawn from render column 'coloff', so the cursor goes
+         * at its char column's render column, past the sidebar and gutter. */
         int filerow = E.rowoff+E.cy;
         erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+        int col = E.coloff+E.cx;
+        int tx = E.cx;
         if (row) {
-            for (j = E.coloff; j < (E.cx+E.coloff); j++) {
-                if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
-                cx++;
-            }
+            tx = editorCharToRenderCol(row,col) - E.coloff;
+            if (col > row->size) tx += col - row->size; /* past end of line */
+            if (tx < 0) tx = 0;
         }
-        snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx);
+        snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,1+E.ft_width+E.ln_width+tx);
         abAppend(&ab,buf,strlen(buf));
     }
     abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
@@ -1380,6 +1438,8 @@ void editorSetStatusMessage(const char *fmt, ...) {
 /* =============================== Find mode ================================ */
 
 #define QUIP_QUERY_LEN 256
+
+static void editorSetCol(int new_col);
 
 void editorFind(int fd) {
     char query[QUIP_QUERY_LEN+1] = {0};
@@ -1462,15 +1522,8 @@ void editorFind(int fd) {
                     memset(row->hl+match_offset,HL_MATCH,qlen);
                 }
                 E.cy = 0;
-                E.cx = match_offset;
                 E.rowoff = current;
-                E.coloff = 0;
-                /* Scroll horizontally as needed. */
-                if (E.cx > E.screencols) {
-                    int diff = E.cx - E.screencols;
-                    E.cx -= diff;
-                    E.coloff += diff;
-                }
+                editorSetCol(editorRenderToCharCol(row,match_offset));
             }
         }
     }
@@ -1738,19 +1791,13 @@ static int editorCursorPastEnd(void) {
 static void editorMouseSetCursor(void) {
     if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
         E.cy = E.mouse_cy;
-    int text_cx = E.mouse_cx - E.ft_width; /* physical col → text col */
+    int text_cx = E.mouse_cx - E.ft_width - E.ln_width; /* physical → text */
+    if (text_cx < 0 && E.mouse_cx >= E.ft_width) text_cx = 0; /* in gutter */
     if (text_cx >= 0 && text_cx < E.screencols) {
         int file_row = E.rowoff + E.cy;
         if (file_row < E.numrows) {
-            erow *row = &E.row[file_row];
-            int rcol = E.coloff + text_cx;
-            int fc = 0, rc = 0;
-            while (fc < row->size && rc < rcol) {
-                if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
-                else rc++;
-                fc++;
-            }
-            editorSetCol(fc);
+            editorSetCol(editorRenderToCharCol(&E.row[file_row],
+                                               E.coloff + text_cx));
         } else {
             editorSetCol(0);
         }
@@ -2286,8 +2333,7 @@ static void ftCollapse(void) {
 /* Show or hide the sidebar, recomputing the text-area geometry. */
 static void ftToggle(void) {
     if (!E.ft_open) {
-        int phys = E.screencols; /* ft_width is 0 while closed. */
-        if (phys < FT_WIDTH + FT_MIN_TEXT) {
+        if (E.termcols < FT_WIDTH + FT_MIN_TEXT) {
             editorSetStatusMessage("Terminal too narrow for the file tree");
             return;
         }
@@ -2302,14 +2348,7 @@ static void ftToggle(void) {
         E.ft_focus = 0;
         E.ft_width = 0;
     }
-    updateWindowSize();
-    /* Clamp the editor's horizontal position into the new text width. */
-    if (E.cx >= E.screencols) {
-        E.coloff += E.cx - (E.screencols-1);
-        E.cx = E.screencols-1;
-    }
-    if (E.cx < 0) E.cx = 0;
-    if (E.coloff < 0) E.coloff = 0;
+    editorUpdateGeometry();
 }
 
 /* Handle a key while the sidebar has focus. Returns 1 if the key was consumed. */
@@ -2666,18 +2705,20 @@ int editorFileWasModified(void) {
 
 void updateWindowSize(void) {
     if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
-                      &E.screenrows,&E.screencols) == -1) {
+                      &E.screenrows,&E.termcols) == -1) {
         editorDie("Unable to query the screen for size (columns / rows)",
                   errno);
     }
     E.screenrows -= 2; /* Get room for status bar. */
-    E.screencols -= E.ft_width; /* Reserve columns for the file-tree sidebar. */
+    editorUpdateGeometry(); /* Reserve columns for the sidebar and gutter. */
 }
 
 void handleSigWinCh(int unused __attribute__((unused))) {
     updateWindowSize();
-    if (E.cy > E.screenrows) E.cy = E.screenrows - 1;
-    if (E.cx > E.screencols) E.cx = E.screencols - 1;
+    if (E.cy >= E.screenrows) {
+        E.rowoff += E.cy - (E.screenrows-1);
+        E.cy = E.screenrows - 1;
+    }
     if (E.ft_scroll > E.ft_vcount) E.ft_scroll = E.ft_vcount ? E.ft_vcount-1 : 0;
     if (E.coloff < 0) E.coloff = 0;
     editorRefreshScreen();
@@ -2697,6 +2738,7 @@ void initEditor(void) {
     E.sel_active = 0;
     E.ft_open = 0;
     E.ft_width = 0;
+    E.ln_width = 0;
     E.ft_focus = 0;
     E.ft_root = NULL;
     E.ft_vis = NULL;
