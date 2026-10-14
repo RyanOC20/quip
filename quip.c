@@ -1317,9 +1317,15 @@ void editorRefreshScreen(void) {
             }
         }
 
+        /* Spaces that end the line get a red background. */
+        int trail = r->size;
+        while (trail > 0 && r->chars[trail-1] == ' ') trail--;
+        int trail_rcol = editorCharToRenderCol(r, trail);
+
         int len = r->rsize - E.coloff;
         int current_color = -1;
         int in_selection = 0;
+        int in_trail = 0;
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
@@ -1347,6 +1353,15 @@ void editorRefreshScreen(void) {
                         in_selection = 0;
                         current_color = -1;
                     }
+                }
+
+                /* Trailing-space highlight; a selection takes precedence. */
+                int want_trail = rcol >= trail_rcol && !in_selection;
+                if (want_trail != in_trail) {
+                    if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+                    run_start = j;
+                    abAppend(&ab, want_trail ? "\x1b[41m" : "\x1b[49m", 5);
+                    in_trail = want_trail;
                 }
 
                 if (hl[j] == HL_NONPRINT) {
@@ -1387,6 +1402,7 @@ void editorRefreshScreen(void) {
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
         }
         abAppend(&ab,"\x1b[39m",5);
+        if (in_trail) abAppend(&ab,"\x1b[49m",5); /* keep red out of EOL erase */
         /* A selected newline extends the highlight to the edge of the screen
          * (erase to EOL with a reverse-video bg); otherwise it stops at the
          * last selected character. */
