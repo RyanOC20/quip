@@ -118,7 +118,8 @@ struct editorConfig {
     int click_count;      /* Left presses in the current multi-click gesture. */
     int click_cx, click_cy;           /* Screen cell of the last left press. */
     struct timespec click_time;       /* When the last left press arrived. */
-    int word_row, word_start, word_end; /* Word picked by a double-click. */
+    int unit_sr, unit_sc, unit_er, unit_ec; /* Word or line a multi-click
+                                               picked: (sr,sc) up to (er,ec). */
     char *clipboard;      /* Internal clipboard buffer (may contain '\n'). */
     int   clipboard_len;  /* Byte count of clipboard contents. */
     int ft_open;          /* File-tree sidebar visible? */
@@ -1572,6 +1573,19 @@ static void editorSetCol(int new_col) {
     }
 }
 
+/* Move the cursor to file position (row,col), scrolling it into view. */
+static void editorSetCursorPos(int row, int col) {
+    if (row < E.rowoff) {
+        E.rowoff = row; E.cy = 0;
+    } else if (row >= E.rowoff + E.screenrows) {
+        E.rowoff = row - E.screenrows + 1;
+        E.cy = E.screenrows - 1;
+    } else {
+        E.cy = row - E.rowoff;
+    }
+    editorSetCol(col);
+}
+
 /* Handle cursor position change because arrow keys were pressed. */
 void editorMoveCursor(int key) {
     int filerow = E.rowoff+E.cy;
@@ -1783,15 +1797,7 @@ void editorDeleteSelection(void) {
             editorDelRow(i);
     }
 
-    if (sr < E.rowoff) {
-        E.rowoff = sr; E.cy = 0;
-    } else if (sr >= E.rowoff + E.screenrows) {
-        E.rowoff = sr - E.screenrows + 1;
-        E.cy = E.screenrows - 1;
-    } else {
-        E.cy = sr - E.rowoff;
-    }
-    editorSetCol(sc);
+    editorSetCursorPos(sr, sc);
     E.sel_active = 0;
 }
 
@@ -1893,28 +1899,69 @@ static int editorMouseCharCol(void) {
     return col;
 }
 
-/* Extend a double-click selection by whole words toward the mouse, keeping
- * the originally clicked word selected. */
-static void editorMouseExtendWords(void) {
+/* The unit under the mouse for a multi-click: the word (clicks == 2) or the
+ * whole line including its newline (clicks == 3), as (sr,sc) up to (er,ec).
+ * The last line has no newline, so its unit ends at the end of the line.
+ * Moves the cursor to the mouse first. Returns 0 if there is no text. */
+static int editorMouseUnit(int clicks, int *sr, int *sc, int *er, int *ec) {
     editorMouseSetCursor();
     int filerow = E.rowoff + E.cy;
-    if (filerow >= E.numrows) return;
-    int start, end;
-    editorWordAt(&E.row[filerow], editorMouseCharCol(), &start, &end);
-    E.sel_anchor_row = E.word_row;
-    if (filerow < E.word_row ||
-        (filerow == E.word_row && start < E.word_start)) {
-        E.sel_anchor_col = E.word_end;
-        editorSetCol(start);
+    if (filerow >= E.numrows) return 0;
+    *sr = *er = filerow;
+    if (clicks == 2) {
+        editorWordAt(&E.row[filerow], editorMouseCharCol(), sc, ec);
+    } else if (filerow + 1 < E.numrows) {
+        *sc = 0; *er = filerow + 1; *ec = 0;
     } else {
-        E.sel_anchor_col = E.word_start;
-        editorSetCol(filerow == E.word_row && end < E.word_end ?
-                     E.word_end : end);
+        *sc = 0; *ec = E.row[filerow].size;
+    }
+    return 1;
+}
+
+/* Select exactly the clicked unit. The cursor goes to the unit's end when
+ * that is on the clicked row, else to its start: a line's newline ends on
+ * the next row, which may be off screen, and the view must not scroll. */
+static void editorMouseSelectClickedUnit(void) {
+    E.sel_active = 1;
+    if (E.unit_er == E.unit_sr) {
+        E.sel_anchor_row = E.unit_sr; E.sel_anchor_col = E.unit_sc;
+        editorSetCursorPos(E.unit_er, E.unit_ec);
+    } else {
+        E.sel_anchor_row = E.unit_er; E.sel_anchor_col = E.unit_ec;
+        editorSetCursorPos(E.unit_sr, E.unit_sc);
+    }
+}
+
+/* Start a double- or triple-click selection of the unit under the mouse. */
+static void editorMouseSelectUnit(int clicks) {
+    int sr, sc, er, ec;
+    if (!editorMouseUnit(clicks, &sr, &sc, &er, &ec)) {
+        int row = E.rowoff + E.cy, col = E.coloff + E.cx;
+        sr = er = row; sc = ec = col;
+    }
+    E.unit_sr = sr; E.unit_sc = sc; E.unit_er = er; E.unit_ec = ec;
+    editorMouseSelectClickedUnit();
+}
+
+/* Extend a multi-click selection by whole units (words or lines) toward the
+ * mouse, keeping the originally clicked unit selected. */
+static void editorMouseExtendUnits(int clicks) {
+    int sr, sc, er, ec;
+    if (!editorMouseUnit(clicks, &sr, &sc, &er, &ec)) return;
+    if (sr < E.unit_sr || (sr == E.unit_sr && sc < E.unit_sc)) {
+        E.sel_anchor_row = E.unit_er; E.sel_anchor_col = E.unit_ec;
+        editorSetCursorPos(sr, sc);
+    } else if (er > E.unit_er || (er == E.unit_er && ec > E.unit_ec)) {
+        E.sel_anchor_row = E.unit_sr; E.sel_anchor_col = E.unit_sc;
+        editorSetCursorPos(er, ec);
+    } else {
+        editorMouseSelectClickedUnit(); /* back inside the clicked unit */
     }
 }
 
 /* Register a left press and return how many presses in a row it makes:
- * 2 means a double-click (same cell, within 400ms of the previous press). */
+ * 2 is a double-click, 3 a triple-click (same cell, each press within 400ms
+ * of the previous one). */
 static int editorCountClick(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1925,7 +1972,7 @@ static int editorCountClick(void) {
         E.click_count++;
     else
         E.click_count = 1;
-    if (E.click_count > 2) E.click_count = 1; /* a third press starts over */
+    if (E.click_count > 3) E.click_count = 1; /* a fourth press starts over */
     E.click_time = now;
     E.click_cx = E.mouse_cx;
     E.click_cy = E.mouse_cy;
@@ -2670,19 +2717,9 @@ void editorProcessKeypress(int fd) {
             break;
         }
         E.ft_focus = 0;
-        if (editorCountClick() == 2) {
-            /* Double-click: select the word under the pointer. */
-            editorMouseSetCursor();
-            int filerow = E.rowoff + E.cy;
-            E.word_row = filerow;
-            E.word_start = E.word_end = 0;
-            if (filerow < E.numrows)
-                editorWordAt(&E.row[filerow], editorMouseCharCol(),
-                             &E.word_start, &E.word_end);
-            E.sel_active     = 1;
-            E.sel_anchor_row = filerow;
-            E.sel_anchor_col = E.word_start;
-            editorSetCol(E.word_end);
+        if (editorCountClick() >= 2) {
+            /* Double-click selects the word, triple-click the line. */
+            editorMouseSelectUnit(E.click_count);
             break;
         }
         editorMouseSetCursor();
@@ -2692,12 +2729,12 @@ void editorProcessKeypress(int fd) {
         break;
     case MOUSE_DRAG:
         if (!E.sel_active) break;
-        if (E.click_count == 2) editorMouseExtendWords();
+        if (E.click_count >= 2) editorMouseExtendUnits(E.click_count);
         else editorMouseSetCursor();
         break;
     case MOUSE_RELEASE:
         if (E.ft_open && E.mouse_cx < E.ft_width) break;
-        if (E.click_count == 2) break; /* keep the word selection */
+        if (E.click_count >= 2) break; /* keep the word/line selection */
         editorMouseSetCursor();
         /* If anchor == cursor the user just clicked; clear the selection. */
         if (E.sel_anchor_row == E.rowoff + E.cy &&
