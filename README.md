@@ -44,6 +44,7 @@ Shortcuts:
 | <kbd>Ctrl</kbd>+<kbd>→</kbd> | End of line |
 | <kbd>Alt</kbd>/<kbd>Option</kbd>+<kbd>←</kbd> | Start of previous word |
 | <kbd>Alt</kbd>/<kbd>Option</kbd>+<kbd>→</kbd> | End of next word |
+| Double-click | Select word (drag to extend by whole words) |
 
 Quip does not depend on any library (not even curses).
 

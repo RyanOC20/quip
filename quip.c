@@ -27,6 +27,7 @@
  */
 
 #define QUIP_VERSION "0.0.1"
+#define QUIP_TAB_STOP 2 /* Tab width; the Tab key inserts spaces up to it. */
 
 #ifdef __linux__
 #define _POSIX_C_SOURCE 200809L
@@ -114,6 +115,10 @@ struct editorConfig {
     int sel_anchor_row;   /* File row where the selection was anchored. */
     int sel_anchor_col;   /* File col where the selection was anchored. */
     int mouse_cx, mouse_cy; /* Screen position of last mouse click. */
+    int click_count;      /* Left presses in the current multi-click gesture. */
+    int click_cx, click_cy;           /* Screen cell of the last left press. */
+    struct timespec click_time;       /* When the last left press arrived. */
+    int word_row, word_start, word_end; /* Word picked by a double-click. */
     char *clipboard;      /* Internal clipboard buffer (may contain '\n'). */
     int   clipboard_len;  /* Byte count of clipboard contents. */
     int ft_open;          /* File-tree sidebar visible? */
@@ -835,17 +840,17 @@ void editorUpdateRow(erow *row) {
         if (row->chars[j] == TAB) tabs++;
 
     unsigned long long allocsize =
-        (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
+        (unsigned long long) row->size + tabs*QUIP_TAB_STOP + nonprint*9 + 1;
     if (allocsize > UINT32_MAX) {
         editorDie("Some line of the edited file is too long for quip", 0);
     }
 
     row->render = growBuf(row->render,&row->render_cap,
-                          row->size + tabs*8 + nonprint*9 + 1);
+                          row->size + tabs*QUIP_TAB_STOP + nonprint*9 + 1);
     idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
-            do row->render[idx++] = ' '; while (idx % 8 != 0);
+            do row->render[idx++] = ' '; while (idx % QUIP_TAB_STOP != 0);
         } else {
             row->render[idx++] = row->chars[j];
         }
@@ -1160,10 +1165,20 @@ void abFree(struct abuf *ab) {
 int editorCharToRenderCol(erow *row, int char_col) {
     int rcol = 0;
     for (int i = 0; i < char_col && i < row->size; i++) {
-        if (row->chars[i] == TAB) rcol += 8 - (rcol % 8);
+        if (row->chars[i] == TAB) rcol += QUIP_TAB_STOP - (rcol % QUIP_TAB_STOP);
         else rcol++;
     }
     return rcol;
+}
+
+/* Insert spaces up to the next tab stop instead of a TAB character. */
+void editorInsertTab(void) {
+    int filerow = E.rowoff+E.cy;
+    int filecol = E.coloff+E.cx;
+    int rcol = filerow < E.numrows ?
+               editorCharToRenderCol(&E.row[filerow],filecol) : 0;
+    int n = QUIP_TAB_STOP - (rcol % QUIP_TAB_STOP);
+    while (n--) editorInsertChar(' ');
 }
 
 /* Inverse of editorCharToRenderCol: the char column whose rendering covers
@@ -1171,7 +1186,7 @@ int editorCharToRenderCol(erow *row, int char_col) {
 int editorRenderToCharCol(erow *row, int rcol) {
     int fc = 0, rc = 0;
     while (fc < row->size && rc < rcol) {
-        if (row->chars[fc] == TAB) rc += 8 - (rc % 8);
+        if (row->chars[fc] == TAB) rc += QUIP_TAB_STOP - (rc % QUIP_TAB_STOP);
         else rc++;
         fc++;
     }
@@ -1179,6 +1194,24 @@ int editorRenderToCharCol(erow *row, int rcol) {
 }
 
 void editorSelClear(void) { E.sel_active = 0; }
+
+/* Ordered bounds of the selection: from (*sr,*sc) up to (*er,*ec). An end on
+ * the empty line past the last row (the keyboard can reach it) is clamped to
+ * the end of the file, so callers only ever see real rows. Returns 0 when
+ * nothing is selected. */
+static int editorSelBounds(int *sr, int *sc, int *er, int *ec) {
+    if (!E.sel_active || E.numrows == 0) return 0;
+    int ar = E.sel_anchor_row,  ac = E.sel_anchor_col;
+    int cr = E.rowoff + E.cy,   cc = E.coloff + E.cx;
+    if (ar < cr || (ar == cr && ac <= cc)) {
+        *sr = ar; *sc = ac; *er = cr; *ec = cc;
+    } else {
+        *sr = cr; *sc = cc; *er = ar; *ec = ac;
+    }
+    if (*er >= E.numrows) { *er = E.numrows - 1; *ec = E.row[*er].size; }
+    if (*sr > *er)        { *sr = *er; *sc = *ec; }
+    return !(*sr == *er && *sc == *ec);
+}
 
 static void editorSelSetAnchor(void) {
     if (!E.sel_active) {
@@ -1268,15 +1301,8 @@ void editorRefreshScreen(void) {
 
         /* Compute selection render-column range for this row. */
         int sel_rcol_start = -1, sel_rcol_end = -1;
-        if (E.sel_active) {
-            int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
-            int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
-            int sr, sc, er, ec;
-            if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
-                sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
-            } else {
-                sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
-            }
+        int sr, sc, er, ec;
+        if (editorSelBounds(&sr,&sc,&er,&ec)) {
             if (filerow >= sr && filerow <= er) {
                 int char_start = (filerow == sr) ? sc : 0;
                 int char_end   = (filerow == er) ? ec : r->size;
@@ -1708,18 +1734,8 @@ void editorToggleLineComment(int filerow) {
 }
 
 void editorDeleteSelection(void) {
-    if (!E.sel_active) return;
-
-    int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
-    int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
     int sr, sc, er, ec;
-    if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
-        sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
-    } else {
-        sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
-    }
-
-    if (sr == er && sc == ec) { editorSelClear(); return; }
+    if (!editorSelBounds(&sr,&sc,&er,&ec)) { editorSelClear(); return; }
 
     if (sr == er) {
         erow *row = &E.row[sr];
@@ -1787,10 +1803,18 @@ static int editorCursorPastEnd(void) {
     return E.coloff + E.cx > len;
 }
 
-/* Moves cursor to E.mouse_cx/cy, converting render column → file column. */
+/* Moves cursor to E.mouse_cx/cy, converting render column → file column.
+ * A click below the last line lands at the end of the last line. */
 static void editorMouseSetCursor(void) {
     if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows)
         E.cy = E.mouse_cy;
+    int last = E.numrows ? E.numrows - 1 : 0;
+    if (E.rowoff + E.cy > last) {
+        if (last < E.rowoff) E.rowoff = last;
+        E.cy = last - E.rowoff;
+        editorSetCol(E.numrows ? E.row[last].size : 0);
+        return;
+    }
     int text_cx = E.mouse_cx - E.ft_width - E.ln_width; /* physical → text */
     if (text_cx < 0 && E.mouse_cx >= E.ft_width) text_cx = 0; /* in gutter */
     if (text_cx >= 0 && text_cx < E.screencols) {
@@ -1804,22 +1828,86 @@ static void editorMouseSetCursor(void) {
     }
 }
 
+/* Character class for double-click word selection: a run of word
+ * characters, of whitespace, or of punctuation selects as one unit. Bytes
+ * >= 0x80 count as word characters so UTF-8 words stay whole. */
+static int editorWordClass(int c) {
+    if (isalnum(c) || c == '_' || c >= 0x80) return 2;
+    if (isspace(c)) return 0;
+    return 1;
+}
+
+/* Bounds [*start,*end) of the run of same-class characters at 'col' in
+ * 'row'. A column past the end of the line picks the line's last run. */
+static void editorWordAt(erow *row, int col, int *start, int *end) {
+    if (row->size == 0) { *start = *end = 0; return; }
+    if (col >= row->size) col = row->size - 1;
+    unsigned char *s = (unsigned char *)row->chars;
+    int cls = editorWordClass(s[col]);
+    int a = col, b = col + 1;
+    while (a > 0 && editorWordClass(s[a-1]) == cls) a--;
+    while (b < row->size && editorWordClass(s[b]) == cls) b++;
+    *start = a; *end = b;
+}
+
+/* File column of the character under the mouse, after editorMouseSetCursor.
+ * That puts the cursor on the nearest boundary, which for a click inside a
+ * TAB is just past it; step back so the TAB itself counts as clicked. */
+static int editorMouseCharCol(void) {
+    int filerow = E.rowoff + E.cy;
+    int col = E.coloff + E.cx;
+    if (filerow >= E.numrows || col == 0) return col;
+    int rcol = E.coloff + E.mouse_cx - E.ft_width - E.ln_width;
+    if (editorCharToRenderCol(&E.row[filerow], col) > rcol) col--;
+    return col;
+}
+
+/* Extend a double-click selection by whole words toward the mouse, keeping
+ * the originally clicked word selected. */
+static void editorMouseExtendWords(void) {
+    editorMouseSetCursor();
+    int filerow = E.rowoff + E.cy;
+    if (filerow >= E.numrows) return;
+    int start, end;
+    editorWordAt(&E.row[filerow], editorMouseCharCol(), &start, &end);
+    E.sel_anchor_row = E.word_row;
+    if (filerow < E.word_row ||
+        (filerow == E.word_row && start < E.word_start)) {
+        E.sel_anchor_col = E.word_end;
+        editorSetCol(start);
+    } else {
+        E.sel_anchor_col = E.word_start;
+        editorSetCol(filerow == E.word_row && end < E.word_end ?
+                     E.word_end : end);
+    }
+}
+
+/* Register a left press and return how many presses in a row it makes:
+ * 2 means a double-click (same cell, within 400ms of the previous press). */
+static int editorCountClick(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long ms = (now.tv_sec - E.click_time.tv_sec) * 1000 +
+              (now.tv_nsec - E.click_time.tv_nsec) / 1000000;
+    if (E.click_count && ms <= 400 &&
+        E.mouse_cx == E.click_cx && E.mouse_cy == E.click_cy)
+        E.click_count++;
+    else
+        E.click_count = 1;
+    if (E.click_count > 2) E.click_count = 1; /* a third press starts over */
+    E.click_time = now;
+    E.click_cx = E.mouse_cx;
+    E.click_cy = E.mouse_cy;
+    return E.click_count;
+}
+
 /* ========================= Clipboard ======================================*/
 
 /* Returns malloc'd string of selected text, sets *outlen. Caller frees.
  * Returns NULL if no selection or zero-length selection. */
 static char *editorGetSelection(int *outlen) {
-    if (!E.sel_active) return NULL;
-
-    int anc_row = E.sel_anchor_row, anc_col = E.sel_anchor_col;
-    int cur_row = E.rowoff + E.cy,  cur_col = E.coloff + E.cx;
     int sr, sc, er, ec;
-    if (anc_row < cur_row || (anc_row == cur_row && anc_col <= cur_col)) {
-        sr = anc_row; sc = anc_col; er = cur_row; ec = cur_col;
-    } else {
-        sr = cur_row; sc = cur_col; er = anc_row; ec = anc_col;
-    }
-    if (sr == er && sc == ec) return NULL;
+    if (!editorSelBounds(&sr,&sc,&er,&ec)) return NULL;
 
     if (sr == er) {
         int count = ec - sc;
@@ -2538,22 +2626,41 @@ void editorProcessKeypress(int fd) {
         undo_last_insert = 0;
         if (E.ft_open && E.mouse_cx < E.ft_width) {
             /* Click inside the sidebar: focus it and act on the row. */
+            E.click_count = 0;
             E.ft_focus = 1;
             int idx = E.ft_scroll + E.mouse_cy;
             if (idx >= 0 && idx < E.ft_vcount) { E.ft_sel = idx; ftActivate(); }
             break;
         }
         E.ft_focus = 0;
+        if (editorCountClick() == 2) {
+            /* Double-click: select the word under the pointer. */
+            editorMouseSetCursor();
+            int filerow = E.rowoff + E.cy;
+            E.word_row = filerow;
+            E.word_start = E.word_end = 0;
+            if (filerow < E.numrows)
+                editorWordAt(&E.row[filerow], editorMouseCharCol(),
+                             &E.word_start, &E.word_end);
+            E.sel_active     = 1;
+            E.sel_anchor_row = filerow;
+            E.sel_anchor_col = E.word_start;
+            editorSetCol(E.word_end);
+            break;
+        }
         editorMouseSetCursor();
         E.sel_active     = 1;
         E.sel_anchor_row = E.rowoff + E.cy;
         E.sel_anchor_col = E.coloff + E.cx;
         break;
     case MOUSE_DRAG:
-        if (E.sel_active) editorMouseSetCursor();
+        if (!E.sel_active) break;
+        if (E.click_count == 2) editorMouseExtendWords();
+        else editorMouseSetCursor();
         break;
     case MOUSE_RELEASE:
         if (E.ft_open && E.mouse_cx < E.ft_width) break;
+        if (E.click_count == 2) break; /* keep the word selection */
         editorMouseSetCursor();
         /* If anchor == cursor the user just clicked; clear the selection. */
         if (E.sel_anchor_row == E.rowoff + E.cy &&
@@ -2692,7 +2799,8 @@ void editorProcessKeypress(int fd) {
             undo_last_insert = 1;
         }
         if (E.sel_active) editorDeleteSelection();
-        editorInsertChar(c);
+        if (c == TAB) editorInsertTab();
+        else editorInsertChar(c);
         break;
     }
 
@@ -2736,6 +2844,7 @@ void initEditor(void) {
     E.filename = NULL;
     E.syntax = NULL;
     E.sel_active = 0;
+    E.click_count = 0;
     E.ft_open = 0;
     E.ft_width = 0;
     E.ln_width = 0;
