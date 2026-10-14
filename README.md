@@ -38,6 +38,7 @@ Shortcuts:
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo |
 | <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Redo |
 | <kbd>Ctrl</kbd>+<kbd>/</kbd> | Toggle inline comment |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> | Remove one level of indentation from the current line |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> | Start of file |
 | <kbd>Ctrl</kbd>+<kbd>↓</kbd> | End of file |
 | <kbd>Ctrl</kbd>+<kbd>←</kbd> | Start of line |

@@ -217,7 +217,8 @@ enum KEY_ACTION{
         SCROLL_RIGHT,
         MOUSE_CLICK,
         MOUSE_DRAG,
-        MOUSE_RELEASE
+        MOUSE_RELEASE,
+        SHIFT_TAB
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
@@ -523,6 +524,7 @@ int editorReadKey(int fd) {
                     case 'D': return ARROW_LEFT;
                     case 'H': return HOME_KEY;
                     case 'F': return END_KEY;
+                    case 'Z': return SHIFT_TAB;
                     case 'M': {
                         if (read(fd,seq+2,1) == 0) return ESC;
                         if (read(fd,seq+3,1) == 0) return ESC;
@@ -975,8 +977,8 @@ void editorRowAppendString(erow *row, char *s, size_t len) {
 void editorRowDelChar(erow *row, int at) {
     if (row->size <= at) return;
     memmove(row->chars+at,row->chars+at+1,row->size-at);
-    editorUpdateRow(row);
     row->size--;
+    editorUpdateRow(row);
     E.dirty++;
 }
 
@@ -1301,9 +1303,11 @@ void editorRefreshScreen(void) {
 
         /* Compute selection render-column range for this row. */
         int sel_rcol_start = -1, sel_rcol_end = -1;
+        int sel_newline = 0; /* Is this row's newline inside the selection? */
         int sr, sc, er, ec;
         if (editorSelBounds(&sr,&sc,&er,&ec)) {
             if (filerow >= sr && filerow <= er) {
+                sel_newline = filerow < er;
                 int char_start = (filerow == sr) ? sc : 0;
                 int char_end   = (filerow == er) ? ec : r->size;
                 sel_rcol_start = editorCharToRenderCol(r, char_start);
@@ -1382,12 +1386,13 @@ void editorRefreshScreen(void) {
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
         }
         abAppend(&ab,"\x1b[39m",5);
-        if (in_selection) {
-            abAppend(&ab,"\x1b[0K",4);  /* erase to EOL with reverse-video bg */
-            abAppend(&ab,"\x1b[27m",5); /* reverse off */
-        } else {
-            abAppend(&ab,"\x1b[0K",4);
-        }
+        /* A selected newline extends the highlight to the edge of the screen
+         * (erase to EOL with a reverse-video bg); otherwise it stops at the
+         * last selected character. */
+        if (sel_newline && !in_selection) abAppend(&ab,"\x1b[7m",4);
+        if (!sel_newline && in_selection) abAppend(&ab,"\x1b[27m",5);
+        abAppend(&ab,"\x1b[0K",4);
+        if (sel_newline) abAppend(&ab,"\x1b[27m",5);
         abAppend(&ab,"\r\n",2);
     }
 
@@ -1731,6 +1736,32 @@ void editorToggleLineComment(int filerow) {
         editorRowInsertChar(row, indent,   prefix[0]);
         editorRowInsertChar(row, indent+1, prefix[1]);
     }
+}
+
+/* True if 'filerow' starts with at least one tab stop's worth of spaces. */
+static int editorCanOutdent(int filerow) {
+    if (filerow >= E.numrows || E.row[filerow].size < QUIP_TAB_STOP) return 0;
+    for (int i = 0; i < QUIP_TAB_STOP; i++)
+        if (E.row[filerow].chars[i] != ' ') return 0;
+    return 1;
+}
+
+/* Shift-Tab: drop one tab stop's worth of leading spaces from the cursor's
+ * line. The cursor and a selection anchor on that line shift left with the
+ * text, stopping at the start of the line. */
+void editorOutdentLine(void) {
+    int filerow = E.rowoff + E.cy;
+    if (!editorCanOutdent(filerow)) return;
+    erow *row = &E.row[filerow];
+    int n = QUIP_TAB_STOP;
+    memmove(row->chars, row->chars + n, row->size - n + 1);
+    row->size -= n;
+    editorUpdateRow(row);
+    E.dirty++;
+    int col = E.coloff + E.cx;
+    editorSetCol(col > n ? col - n : 0);
+    if (E.sel_active && E.sel_anchor_row == filerow)
+        E.sel_anchor_col = E.sel_anchor_col > n ? E.sel_anchor_col - n : 0;
 }
 
 void editorDeleteSelection(void) {
@@ -2614,6 +2645,12 @@ void editorProcessKeypress(int fd) {
         editorSelClear();
         editorToggleLineComment(E.rowoff + E.cy);
         break;
+    case SHIFT_TAB:     /* Shift-Tab — outdent the current line */
+        if (!editorCanOutdent(E.rowoff + E.cy)) break;
+        editorPushSnapshot();
+        undo_last_insert = 0;
+        editorOutdentLine();
+        break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
     case DEL_KEY:
@@ -2769,9 +2806,11 @@ void editorProcessKeypress(int fd) {
         undo_last_insert = 0;
         editorSelClear(); editorMoveFileEnd();                break;
     case CTRL_ARROW_LEFT:
+    case HOME_KEY:
         undo_last_insert = 0;
         editorSelClear(); editorMoveLineStart();              break;
     case CTRL_ARROW_RIGHT:
+    case END_KEY:
         undo_last_insert = 0;
         editorSelClear(); editorMoveLineEnd();                break;
     case ALT_ARROW_LEFT:
@@ -2794,6 +2833,8 @@ void editorProcessKeypress(int fd) {
         editorSelClear();
         break;
     default:
+        /* Soft key codes are not text; never insert one as a byte. */
+        if (c >= ARROW_LEFT) break;
         if (!undo_last_insert || E.sel_active) {
             editorPushSnapshot();
             undo_last_insert = 1;
