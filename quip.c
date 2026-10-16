@@ -1216,6 +1216,34 @@ static int editorSelBounds(int *sr, int *sc, int *er, int *ec) {
     return !(*sr == *er && *sc == *ec);
 }
 
+/* Number of characters in the selection, each line break counting as one.
+ * UTF-8 continuation bytes are skipped so a multibyte character counts once. */
+static long editorSelCharCount(void) {
+    int sr, sc, er, ec;
+    if (!editorSelBounds(&sr,&sc,&er,&ec)) return 0;
+    long count = er - sr;
+    for (int i = sr; i <= er; i++) {
+        erow *row = &E.row[i];
+        int from = (i == sr) ? sc : 0;
+        int to = (i == er) ? ec : row->size;
+        for (int j = from; j < to; j++)
+            if (((unsigned char)row->chars[j] & 0xC0) != 0x80) count++;
+    }
+    return count;
+}
+
+/* Character column of the cursor: UTF-8 continuation bytes before it are not
+ * counted, so a multibyte character advances the column by one. */
+static int editorCursorCharCol(void) {
+    int filerow = E.rowoff+E.cy, col = E.coloff+E.cx;
+    if (filerow >= E.numrows) return col;
+    erow *row = &E.row[filerow];
+    int bytes = col < row->size ? col : row->size, n = col - bytes;
+    for (int j = 0; j < bytes; j++)
+        if (((unsigned char)row->chars[j] & 0xC0) != 0x80) n++;
+    return n;
+}
+
 static void editorSelSetAnchor(void) {
     if (!E.sel_active) {
         E.sel_active     = 1;
@@ -1421,8 +1449,12 @@ void editorRefreshScreen(void) {
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
         E.filename, E.numrows, E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus),
-        "%d/%d",E.rowoff+E.cy+1,E.numrows);
+    long selchars = editorSelCharCount();
+    int rlen = selchars ?
+        snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d",
+            selchars,editorCursorCharCol(),E.rowoff+E.cy+1) :
+        snprintf(rstatus, sizeof(rstatus), "%d:%d",
+            editorCursorCharCol(),E.rowoff+E.cy+1);
     if (len > statuscols) len = statuscols;
     abAppend(&ab,status,len);
     while(len < statuscols) {
