@@ -1,0 +1,19 @@
+quip-lang 1
+# Python.
+# Known gap: triple quoted strings ("""...""") that span lines are not
+# recognised; their inner lines are highlighted as code.
+
+extensions    .py .pyw .pyi
+filenames     SConstruct SConscript
+line_comment  #
+features      strings numbers
+
+keywords
+  False None True and as assert async await break class continue def del
+  elif else except finally for from global if import in is lambda
+  nonlocal not or pass raise return try while with yield match case
+  self
+
+types
+  int float complex str bytes bytearray bool list tuple dict set
+  frozenset object type range memoryview

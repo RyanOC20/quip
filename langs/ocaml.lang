@@ -1,0 +1,19 @@
+quip-lang 1
+# OCaml. There are no line comments, so Ctrl-/ wraps the line in (* ... *)
+# and unwraps it when pressed again.
+
+extensions    .ml .mli
+block_comment (* *)
+features      strings numbers nested_comments multiline_strings
+              quoted_strings prime_quotes
+
+keywords
+  and as assert asr begin class constraint do done downto else end
+  exception external false for fun function functor if in include
+  inherit initializer land lazy let lor lsl lsr lxor match method mod
+  module mutable new nonrec object of open or private rec sig struct
+  then to true try type val virtual when while with
+
+types
+  int float bool char string bytes unit list array option result ref exn
+  int32 int64 nativeint seq lazy_t format

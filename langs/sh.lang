@@ -1,0 +1,13 @@
+quip-lang 1
+# POSIX shell, bash and zsh.
+# Known gap: $variables and heredocs get no color of their own.
+
+extensions    .sh .bash .zsh
+filenames     .bashrc .bash_profile .zshrc .zprofile .profile
+line_comment  #
+features      strings numbers multiline_strings
+
+keywords
+  if then else elif fi case esac for while until do done in function
+  select time return break continue exit local export readonly declare
+  typeset unset shift source alias eval exec trap set

@@ -1,0 +1,21 @@
+quip-lang 1
+# JavaScript and TypeScript.
+# Known gap: `template literals` are not highlighted as strings.
+
+extensions    .js .mjs .cjs .jsx .ts .mts .cts .tsx
+line_comment  //
+block_comment /* */
+features      strings numbers
+
+keywords
+  async await break case catch class const continue debugger default
+  delete do else export extends false finally for from function if
+  import in instanceof let new null of return static super switch this
+  throw true try typeof undefined var void while with yield
+  # TypeScript
+  abstract as declare enum implements interface keyof namespace private
+  protected public readonly type
+
+types
+  number string boolean bigint symbol object any unknown never
+  Array Object Promise Map Set

@@ -65,13 +65,37 @@
 
 #define HL_HIGHLIGHT_STRINGS (1<<0)
 #define HL_HIGHLIGHT_NUMBERS (1<<1)
+#define HL_NESTED_COMMENTS   (1<<2) /* Block comments nest, as in OCaml. */
+#define HL_MULTILINE_STRINGS (1<<3) /* "..." strings may span rows. */
+#define HL_QUOTED_STRINGS    (1<<4) /* OCaml {id|...|id} strings. */
+#define HL_PRIME_QUOTES      (1<<5) /* ' opens a char literal only when one
+                                       fits; otherwise it is a type variable
+                                       ('a) or an identifier prime (x'). */
+
+/* Lexer state at the end of a row, carried into the next row. The low byte
+ * is the kind; the rest is an argument: the comment nesting depth, the
+ * quote char of an open string, or the hash of a quoted string's id. */
+#define HL_ST_NORMAL  0
+#define HL_ST_COMMENT 1
+#define HL_ST_STRING  2
+#define HL_ST_QSTRING 3
+#define HL_ST(kind,arg) ((kind) | ((arg) << 8))
+#define HL_ST_INVALID (-1) /* Never highlighted yet; differs from any state. */
+
+/* A comment delimiter of any length; len 0 when the language has none. */
+typedef struct hldelim {
+    char *s;
+    int len;
+} hldelim;
 
 struct editorSyntax {
-    char **filematch;
-    char **keywords;
-    char singleline_comment_start[3];
-    char multiline_comment_start[3];
-    char multiline_comment_end[3];
+    char *id;           /* Language file name without ".lang", e.g. "c". */
+    char **extensions;  /* ".c" style suffixes, NULL terminated. */
+    char **filenames;   /* Exact base names ("Makefile"), NULL terminated. */
+    char **keywords;    /* "word", or "word|" for a type, NULL terminated. */
+    hldelim line_comment;
+    hldelim block_start;
+    hldelim block_end;
     int flags;
 };
 
@@ -86,8 +110,8 @@ typedef struct erow {
     char *chars;        /* Row content. */
     char *render;       /* Row content "rendered" for screen (for TABs). */
     unsigned char *hl;  /* Syntax highlight type for each character in render.*/
-    int hl_oc;          /* Row had open comment at end in last syntax highlight
-                           check. */
+    int hl_state;       /* Lexer state at the end of the row (HL_ST_*) as of
+                           the last syntax highlight. */
 } erow;
 
 typedef struct hlcolor {
@@ -226,27 +250,30 @@ void editorSetStatusMessage(const char *fmt, ...);
 
 /* =========================== Syntax highlights DB =========================
  *
- * In order to add a new syntax, define two arrays with a list of file name
- * matches and keywords. The file name matches are used in order to match
- * a given syntax with a given file name: if a match pattern starts with a
- * dot, it is matched as the last past of the filename, for example ".c".
- * Otherwise the pattern is just searched inside the filenme, like "Makefile").
+ * Languages are described by plain text ".lang" files (see langs/ and the
+ * README), read once at startup from these directories, first match wins:
  *
- * The list of keywords to highlight is just a list of words, however if they
- * a trailing '|' character is added at the end, they are highlighted in
- * a different color, so that you can have two different sets of keywords.
+ *   $XDG_CONFIG_HOME/quip/langs (~/.config/quip/langs)   the user's own
+ *   $QUIP_LANGDIR                                        if set
+ *   <dir of the quip binary>/langs                       a source checkout
+ *   <dir of the quip binary>/../share/quip/langs         "make install"
+ *   $XDG_DATA_HOME/quip/langs (~/.local/share/quip/langs)
+ *   each $XDG_DATA_DIRS entry + /quip/langs (/usr/local/share, /usr/share)
  *
- * Finally add a stanza in the HLDB global variable with two two arrays
- * of strings, and a set of flags in order to enable highlighting of
- * comments and numbers.
+ * A file overrides any later file with the same name, so ~/.config/quip/
+ * langs/python.lang replaces the installed python.lang. C is also built in
+ * below, so a bare binary still highlights it; any c.lang replaces it.
  *
- * The characters for single and multi line comments must be exactly two
- * and must be provided as well (see the C language example).
+ * A file only supplies words, comment delimiters and feature flags. How text
+ * is lexed (strings, nesting, OCaml quotes) stays in editorHighlightRow, and
+ * each "features" name in a file switches on one of the HL_* flags.
  *
- * There is no support to highlight patterns currently. */
+ * Keywords with a trailing '|' are types, highlighted in a second color; the
+ * loader adds the '|' to every word of a file's "types" line. */
 
-/* C / C++ */
+/* C / C++, built in so that quip works without any language files. */
 char *C_HL_extensions[] = {".c",".h",".cpp",".hpp",".cc",NULL};
+char *C_HL_filenames[] = {NULL};
 char *C_HL_keywords[] = {
 	/* C Keywords */
 	"auto","break","case","continue","default","do","else","enum",
@@ -267,19 +294,416 @@ char *C_HL_keywords[] = {
         "void|","short|","auto|","const|","bool|",NULL
 };
 
-/* Here we define an array of syntax highlights by extensions, keywords,
- * comments delimiters and flags. */
-struct editorSyntax HLDB[] = {
-    {
-        /* C / C++ */
-        C_HL_extensions,
-        C_HL_keywords,
-        "//","/*","*/",
-        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
-    }
+struct editorSyntax C_HL_builtin = {
+    "c",
+    C_HL_extensions,
+    C_HL_filenames,
+    C_HL_keywords,
+    {"//",2},{"/*",2},{"*/",2},
+    HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
 };
 
-#define HLDB_ENTRIES (sizeof(HLDB)/sizeof(HLDB[0]))
+/* Every known language, in match priority order (see above). */
+static struct editorSyntax **HLDB = NULL;
+static int HLDB_ENTRIES = 0;
+
+/* Names accepted on a language file's "features" line. */
+static const struct { const char *name; int flag; } HL_FEATURES[] = {
+    {"strings",           HL_HIGHLIGHT_STRINGS},
+    {"numbers",           HL_HIGHLIGHT_NUMBERS},
+    {"nested_comments",   HL_NESTED_COMMENTS},
+    {"multiline_strings", HL_MULTILINE_STRINGS},
+    {"quoted_strings",    HL_QUOTED_STRINGS},
+    {"prime_quotes",      HL_PRIME_QUOTES},
+};
+
+/* Problems found while loading language files, shown on the status line
+ * once the editor is up. Only the first is spelled out. */
+static char hl_load_error[80];
+static int hl_load_errors = 0;
+
+static void hlLoadError(const char *file, int line, const char *fmt, ...) {
+    if (hl_load_errors++) return;
+    int len = line ?
+        snprintf(hl_load_error,sizeof(hl_load_error),"%s:%d: ",file,line) :
+        snprintf(hl_load_error,sizeof(hl_load_error),"%s: ",file);
+    if (len < 0 || len >= (int)sizeof(hl_load_error)) return;
+    va_list ap;
+    va_start(ap,fmt);
+    vsnprintf(hl_load_error+len,sizeof(hl_load_error)-len,fmt,ap);
+    va_end(ap);
+}
+
+/* Append 's' to the NULL terminated, malloc'd list '*list'. */
+static void hlListAdd(char ***list, const char *s) {
+    int n = 0;
+    while (*list && (*list)[n]) n++;
+    *list = realloc(*list,sizeof(char*)*(n+2));
+    (*list)[n] = strdup(s);
+    (*list)[n+1] = NULL;
+}
+
+static void hlListFree(char **list) {
+    for (int i = 0; list && list[i]; i++) free(list[i]);
+    free(list);
+}
+
+static void hlFreeSyntax(struct editorSyntax *s) {
+    free(s->id);
+    hlListFree(s->extensions);
+    hlListFree(s->filenames);
+    hlListFree(s->keywords);
+    free(s->line_comment.s);
+    free(s->block_start.s);
+    free(s->block_end.s);
+    free(s);
+}
+
+static void hlSetDelim(hldelim *d, const char *s) {
+    d->s = strdup(s);
+    d->len = strlen(s);
+}
+
+/* Split 'line' in place into whitespace separated tokens. Returns the count,
+ * at most 'max'; more tokens than that make it return max+1. */
+static int hlTokenize(char *line, char **tok, int max) {
+    int n = 0;
+    char *p = line;
+    while (1) {
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p) return n;
+        if (n == max) return max+1;
+        tok[n++] = p;
+        while (*p && !isspace((unsigned char)*p)) p++;
+        if (*p) *p++ = '\0';
+    }
+}
+
+/* Parse the language file 'path' (named 'file' in messages). Returns the
+ * language, or NULL after reporting the first problem found. The format:
+ *
+ *   quip-lang 1                    must come first
+ *   # comment                      whole lines only
+ *   extensions    .py .pyw         any of these keys, each at most once
+ *   filenames     SConstruct
+ *   line_comment  #
+ *   block_comment (* *)
+ *   features      strings numbers
+ *   keywords      def class        an indented line continues the key above
+ *   types         int float
+ */
+static struct editorSyntax *hlLoadFile(const char *path, const char *file) {
+    FILE *fp = fopen(path,"r");
+    if (!fp) {
+        hlLoadError(file,0,"%s",strerror(errno));
+        return NULL;
+    }
+
+    struct editorSyntax *s = calloc(1,sizeof(*s));
+    char *line = NULL;
+    size_t linecap = 0;
+    int lineno = 0, have_version = 0, ok = 1;
+    char key[16] = "";  /* The key an indented line continues, if any. */
+    unsigned seen = 0;  /* Bit per key in 'keys', to catch repeats. */
+    static const char *keys[] = {"extensions","filenames","line_comment",
+        "block_comment","features","keywords","types"};
+    enum { K_EXT, K_FILES, K_LINE, K_BLOCK, K_FEAT, K_KW, K_TYPES, K_N };
+
+    while (ok && getline(&line,&linecap,fp) != -1) {
+        lineno++;
+        char *tok[64];
+        int cont = isspace((unsigned char)line[0]);
+        char *first = line;
+        while (*first && isspace((unsigned char)*first)) first++;
+        if (*first == '\0' || *first == '#') continue;
+
+        int ntok = hlTokenize(line,tok,64);
+        if (ntok > 64) {
+            hlLoadError(file,lineno,"more than 64 words on a line");
+            ok = 0;
+            break;
+        }
+
+        if (!have_version) {
+            if (cont || ntok != 2 || strcmp(tok[0],"quip-lang")) {
+                hlLoadError(file,lineno,"must start with \"quip-lang 1\"");
+                ok = 0;
+            } else if (strcmp(tok[1],"1")) {
+                hlLoadError(file,lineno,"unsupported version %.10s",tok[1]);
+                ok = 0;
+            }
+            have_version = 1;
+            continue;
+        }
+
+        /* An indented line continues the key above; otherwise the first
+         * word is the key. */
+        char **args = tok;
+        int nargs = ntok;
+        if (!cont) {
+            snprintf(key,sizeof(key),"%s",tok[0]);
+            args++;
+            nargs--;
+        } else if (!key[0]) {
+            hlLoadError(file,lineno,"indented line continues no key");
+            ok = 0;
+            break;
+        }
+
+        int k;
+        for (k = 0; k < K_N; k++) if (!strcmp(key,keys[k])) break;
+        if (k == K_N) {
+            hlLoadError(file,lineno,"unknown key \"%.20s\"",key);
+            ok = 0;
+            break;
+        }
+        if (!cont) {
+            if (seen & (1u << k)) {
+                hlLoadError(file,lineno,"\"%s\" given twice",key);
+                ok = 0;
+                break;
+            }
+            seen |= 1u << k;
+        }
+        if (cont && (k == K_LINE || k == K_BLOCK)) {
+            hlLoadError(file,lineno,"\"%s\" takes one line",key);
+            ok = 0;
+            break;
+        }
+
+        switch (k) {
+        case K_EXT:
+            for (int i = 0; i < nargs && ok; i++) {
+                if (args[i][0] != '.' || args[i][1] == '\0') {
+                    hlLoadError(file,lineno,
+                        "extension \"%.20s\" must start with '.'",args[i]);
+                    ok = 0;
+                } else {
+                    hlListAdd(&s->extensions,args[i]);
+                }
+            }
+            break;
+        case K_FILES:
+            for (int i = 0; i < nargs; i++) hlListAdd(&s->filenames,args[i]);
+            break;
+        case K_LINE:
+            if (nargs != 1) {
+                hlLoadError(file,lineno,"line_comment takes one delimiter");
+                ok = 0;
+            } else {
+                hlSetDelim(&s->line_comment,args[0]);
+            }
+            break;
+        case K_BLOCK:
+            if (nargs != 2) {
+                hlLoadError(file,lineno,
+                    "block_comment takes a start and an end");
+                ok = 0;
+            } else {
+                hlSetDelim(&s->block_start,args[0]);
+                hlSetDelim(&s->block_end,args[1]);
+            }
+            break;
+        case K_FEAT:
+            for (int i = 0; i < nargs && ok; i++) {
+                unsigned f;
+                for (f = 0; f < sizeof(HL_FEATURES)/sizeof(HL_FEATURES[0]); f++)
+                    if (!strcmp(args[i],HL_FEATURES[f].name)) break;
+                if (f == sizeof(HL_FEATURES)/sizeof(HL_FEATURES[0])) {
+                    hlLoadError(file,lineno,"unknown feature \"%.20s\"",
+                                args[i]);
+                    ok = 0;
+                } else {
+                    s->flags |= HL_FEATURES[f].flag;
+                }
+            }
+            break;
+        case K_KW:
+            for (int i = 0; i < nargs; i++) hlListAdd(&s->keywords,args[i]);
+            break;
+        case K_TYPES:
+            for (int i = 0; i < nargs; i++) {
+                size_t len = strlen(args[i]);
+                char *type = malloc(len+2);
+                memcpy(type,args[i],len);
+                memcpy(type+len,"|",2);
+                hlListAdd(&s->keywords,type);
+                free(type);
+            }
+            break;
+        }
+    }
+    free(line);
+    fclose(fp);
+
+    if (ok && !have_version) {
+        hlLoadError(file,0,"empty, must start with \"quip-lang 1\"");
+        ok = 0;
+    }
+    if (ok && !s->extensions && !s->filenames) {
+        hlLoadError(file,0,"needs \"extensions\" or \"filenames\"");
+        ok = 0;
+    }
+    if (!ok) {
+        hlFreeSyntax(s);
+        return NULL;
+    }
+
+    /* Empty lists and delimiters rather than NULLs keep the users simple. */
+    if (!s->extensions) s->extensions = calloc(1,sizeof(char*));
+    if (!s->filenames) s->filenames = calloc(1,sizeof(char*));
+    if (!s->keywords) s->keywords = calloc(1,sizeof(char*));
+    if (!s->line_comment.s) hlSetDelim(&s->line_comment,"");
+    if (!s->block_start.s) {
+        hlSetDelim(&s->block_start,"");
+        hlSetDelim(&s->block_end,"");
+    }
+    s->id = strndup(file,strlen(file)-5); /* Drop ".lang". */
+    return s;
+}
+
+/* Return malloc'd 'a' (its first 'alen' bytes, or all of it if alen is -1)
+ * followed by 'b' and 'c'. Paths are built this way, at their exact length,
+ * so that a long one is never cut short into some other path. */
+static char *hlPath(const char *a, int alen, const char *b, const char *c) {
+    size_t la = alen < 0 ? strlen(a) : (size_t)alen;
+    size_t lb = strlen(b), lc = strlen(c);
+    char *p = malloc(la+lb+lc+1);
+    memcpy(p,a,la);
+    memcpy(p+la,b,lb);
+    memcpy(p+la+lb,c,lc+1);
+    return p;
+}
+
+static int hlKnown(const char *id) {
+    for (int i = 0; i < HLDB_ENTRIES; i++)
+        if (!strcmp(HLDB[i]->id,id)) return 1;
+    return 0;
+}
+
+static void hlAdd(struct editorSyntax *s) {
+    HLDB = realloc(HLDB,sizeof(*HLDB)*(HLDB_ENTRIES+1));
+    HLDB[HLDB_ENTRIES++] = s;
+}
+
+static int hlCmpNames(const void *a, const void *b) {
+    return strcmp(*(char * const *)a,*(char * const *)b);
+}
+
+/* Load every *.lang file in 'dir' whose name was not loaded already, in
+ * name order so that extension clashes resolve the same way every time. */
+static void hlLoadDir(const char *dir) {
+    /* The same directory can be named twice (QUIP_LANGDIR and an XDG dir);
+     * scan it once so its problems are not reported twice. */
+    static struct { dev_t dev; ino_t ino; } scanned[16];
+    static int nscanned = 0;
+    struct stat st;
+    if (stat(dir,&st) == -1 || !S_ISDIR(st.st_mode))
+        return; /* Missing directories are normal. */
+    for (int i = 0; i < nscanned; i++)
+        if (scanned[i].dev == st.st_dev && scanned[i].ino == st.st_ino) return;
+    if (nscanned < (int)(sizeof(scanned)/sizeof(scanned[0]))) {
+        scanned[nscanned].dev = st.st_dev;
+        scanned[nscanned].ino = st.st_ino;
+        nscanned++;
+    }
+
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char **names = NULL;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        size_t len = strlen(de->d_name);
+        if (len > 5 && !strcmp(de->d_name+len-5,".lang")) {
+            names = realloc(names,sizeof(char*)*(n+1));
+            names[n++] = strdup(de->d_name);
+        }
+    }
+    closedir(d);
+    if (n) qsort(names,n,sizeof(char*),hlCmpNames);
+
+    for (int i = 0; i < n; i++) {
+        char *id = strndup(names[i],strlen(names[i])-5); /* Drop ".lang". */
+        if (!hlKnown(id)) {
+            char *path = hlPath(dir,-1,"/",names[i]);
+            struct editorSyntax *s = hlLoadFile(path,names[i]);
+            if (s) hlAdd(s);
+            free(path);
+        }
+        free(id);
+        free(names[i]);
+    }
+    free(names);
+}
+
+/* Load the language directory 'base' (its first 'len' bytes, or all of it
+ * if len is -1) followed by 'sub'. */
+static void hlLoadSubdir(const char *base, int len, const char *sub) {
+    char *dir = hlPath(base,len,sub,"");
+    hlLoadDir(dir);
+    free(dir);
+}
+
+/* Return the malloc'd directory holding the running binary, found from
+ * argv[0] as the shell did: a name with a slash is a path, a bare name was
+ * looked up in $PATH. Returns NULL if it cannot be found. */
+static char *hlExeDir(const char *argv0) {
+    const char *slash = strrchr(argv0,'/');
+    if (slash == argv0) return strdup("/");     /* "/quip" */
+    if (slash) return strndup(argv0,slash-argv0);
+    const char *path = getenv("PATH");
+    while (path && *path) {
+        int len = strcspn(path,":");
+        /* An empty entry means the current directory. */
+        char *dir = len ? strndup(path,len) : strdup(".");
+        char *exe = hlPath(dir,-1,"/",argv0);
+        int found = access(exe,X_OK) == 0;
+        free(exe);
+        if (found) return dir;
+        free(dir);
+        path += len;
+        if (*path == ':') path++;
+    }
+    return NULL;
+}
+
+/* Build HLDB from the language directories, in the order described at the
+ * top of this section, then the built-in C. */
+void editorLoadLanguages(const char *argv0) {
+    const char *home = getenv("HOME");
+    const char *env;
+
+    if ((env = getenv("XDG_CONFIG_HOME")) && env[0])
+        hlLoadSubdir(env,-1,"/quip/langs");
+    else if (home)
+        hlLoadSubdir(home,-1,"/.config/quip/langs");
+
+    if ((env = getenv("QUIP_LANGDIR")) && env[0]) hlLoadDir(env);
+
+    char *exedir = hlExeDir(argv0);
+    if (exedir) {
+        hlLoadSubdir(exedir,-1,"/langs");
+        hlLoadSubdir(exedir,-1,"/../share/quip/langs");
+        free(exedir);
+    }
+
+    if ((env = getenv("XDG_DATA_HOME")) && env[0])
+        hlLoadSubdir(env,-1,"/quip/langs");
+    else if (home)
+        hlLoadSubdir(home,-1,"/.local/share/quip/langs");
+
+    env = getenv("XDG_DATA_DIRS");
+    if (!env || !env[0]) env = "/usr/local/share:/usr/share";
+    while (*env) {
+        int len = strcspn(env,":");
+        if (len) hlLoadSubdir(env,len,"/quip/langs");
+        env += len;
+        if (*env == ':') env++;
+    }
+
+    if (!hlKnown("c")) hlAdd(&C_HL_builtin);
+}
 
 /* ======================= Low level terminal handling ====================== */
 
@@ -646,118 +1070,215 @@ static void *growBuf(void *buf, int *cap, int need) {
     return realloc(buf,nc);
 }
 
-/* Return true if the specified row last char is part of a multi line comment
- * that starts at this row or at one before, and does not end at the end
- * of the row but spawns to the next row. */
-int editorRowHasOpenComment(erow *row) {
-    if (row->hl && row->rsize && row->hl[row->rsize-1] == HL_MLCOMMENT &&
-        (row->rsize < 2 || (row->render[row->rsize-2] != '*' ||
-                            row->render[row->rsize-1] != '/'))) return 1;
+/* True if delimiter 'd' (never, if the language has none) starts at
+ * offset i of the n-byte row text p. */
+static int hlAt(const char *p, int i, int n, const hldelim *d) {
+    return d->len && i+d->len <= n && !memcmp(p+i,d->s,d->len);
+}
+
+/* True for chars that continue an identifier, OCaml primes included. */
+static int hlIsIdentChar(int c) {
+    return isalnum(c) || c == '_' || c == '\'';
+}
+
+/* Length of the OCaml quoted string id ({id|...|id}) at p: lowercase
+ * letters and underscores, possibly none. */
+static int hlQuotedIdLen(const char *p, int n) {
+    int j = 0;
+    while (j < n && (islower((unsigned char)p[j]) || p[j] == '_')) j++;
+    return j;
+}
+
+/* Hash of a quoted string id, small enough to fit a lexer state argument. */
+static int hlQuotedIdHash(const char *s, int len) {
+    unsigned int h = 2166136261u;
+    for (int k = 0; k < len; k++) h = (h ^ (unsigned char)s[k]) * 16777619u;
+    return (int)(h & 0x7fffff);
+}
+
+/* Length of the OCaml char literal starting at the quote at p ('a', '\n',
+ * '\'', '\065', '\xff', '\o377'), or 0 if none fits there. */
+static int hlCharLiteralLen(const char *p, int n) {
+    if (n >= 3 && p[1] != '\\' && p[2] == '\'') return 3;
+    if (n >= 4 && p[1] == '\\')
+        for (int j = 3; j < n && j <= 6; j++)
+            if (p[j] == '\'') return j+1;
     return 0;
 }
 
-/* Set every byte of row->hl (that corresponds to every character in the line)
- * to the right syntax highlight type (HL_* defines). */
-void editorUpdateSyntax(erow *row) {
-    row->hl = growBuf(row->hl,&row->hl_cap,row->rsize);
-    memset(row->hl,HL_NORMAL,row->rsize);
-
-    if (E.syntax == NULL) return; /* No syntax, everything is HL_NORMAL. */
-
-    int i, prev_sep, in_string, in_comment;
-    char *p;
+/* Set row->hl for every rendered char of the row, starting from lexer
+ * 'state' (the state the previous row ended in). Returns the state this
+ * row ends in. */
+static int editorHighlightRow(erow *row, int state) {
     char **keywords = E.syntax->keywords;
-    char *scs = E.syntax->singleline_comment_start;
-    char *mcs = E.syntax->multiline_comment_start;
-    char *mce = E.syntax->multiline_comment_end;
+    const hldelim *scs = &E.syntax->line_comment;
+    const hldelim *mcs = &E.syntax->block_start;
+    const hldelim *mce = &E.syntax->block_end;
+    int flags = E.syntax->flags;
+    char *p = row->render;
+    unsigned char *hl = row->hl;
+    int n = row->rsize;
+    int kind = state & 0xff, arg = state >> 8;
+    int i = 0;
+    int prev_sep = 1;    /* Does 'i' point to the start of a word? */
+    int escaped_eol = 0; /* Row ends in a backslash inside a string. */
 
-    /* Point to the first non-space char. */
-    p = row->render;
-    i = 0; /* Current char offset */
-    while(*p && isspace(*p)) {
-        p++;
-        i++;
-    }
-    prev_sep = 1; /* Tell the parser if 'i' points to start of word. */
-    in_string = 0; /* Are we inside "" or '' ? */
-    in_comment = 0; /* Are we inside multi-line comment? */
+    while (i < n) {
+        int c = (unsigned char)p[i];
 
-    /* If the previous line has an open comment, this line starts
-     * with an open comment state. */
-    if (row->idx > 0 && editorRowHasOpenComment(&E.row[row->idx-1]))
-        in_comment = 1;
-
-    while(*p) {
-        /* Handle // comments. */
-        if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
-            /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->size-i);
-            return;
-        }
-
-        /* Handle multi line comments. */
-        if (in_comment) {
-            row->hl[i] = HL_MLCOMMENT;
-            if (*p == mce[0] && *(p+1) == mce[1]) {
-                row->hl[i+1] = HL_MLCOMMENT;
-                p += 2; i += 2;
-                in_comment = 0;
-                prev_sep = 1;
-                continue;
+        /* Inside a block comment, possibly opened on an earlier row. */
+        if (kind == HL_ST_COMMENT) {
+            if (hlAt(p,i,n,mce)) {
+                memset(hl+i,HL_MLCOMMENT,mce->len);
+                i += mce->len;
+                if (--arg == 0) {
+                    kind = HL_ST_NORMAL;
+                    prev_sep = 1;
+                }
+            } else if ((flags & HL_NESTED_COMMENTS) && hlAt(p,i,n,mcs)) {
+                memset(hl+i,HL_MLCOMMENT,mcs->len);
+                i += mcs->len;
+                if (arg < 0x7fffff) arg++;
             } else {
-                prev_sep = 0;
-                p++; i++;
+                hl[i++] = HL_MLCOMMENT;
+            }
+            continue;
+        }
+
+        /* Inside a "" or '' string. */
+        if (kind == HL_ST_STRING) {
+            hl[i] = HL_STRING;
+            if (c == '\\') {
+                if (i+1 < n) {
+                    hl[i+1] = HL_STRING;
+                    i += 2;
+                } else {
+                    escaped_eol = 1;
+                    i++;
+                }
                 continue;
             }
-        } else if (*p == mcs[0] && *(p+1) == mcs[1]) {
-            row->hl[i] = HL_MLCOMMENT;
-            row->hl[i+1] = HL_MLCOMMENT;
-            p += 2; i += 2;
-            in_comment = 1;
+            i++;
+            if (c == arg) {
+                kind = HL_ST_NORMAL;
+                prev_sep = 0;
+            }
+            continue;
+        }
+
+        /* Inside a {id|...|id} string: only |id} with the same id ends it. */
+        if (kind == HL_ST_QSTRING) {
+            hl[i] = HL_STRING;
+            if (c == '|') {
+                int idlen = hlQuotedIdLen(p+i+1,n-i-1);
+                int end = i+1+idlen;
+                if (end < n && p[end] == '}' &&
+                    hlQuotedIdHash(p+i+1,idlen) == arg)
+                {
+                    memset(hl+i,HL_STRING,end+1-i);
+                    i = end+1;
+                    kind = HL_ST_NORMAL;
+                    prev_sep = 0;
+                    continue;
+                }
+            }
+            i++;
+            continue;
+        }
+
+        /* Single line comment: the rest of the row. */
+        if (prev_sep && hlAt(p,i,n,scs)) {
+            memset(hl+i,HL_COMMENT,n-i);
+            break;
+        }
+
+        /* Block comment start. */
+        if (hlAt(p,i,n,mcs)) {
+            memset(hl+i,HL_MLCOMMENT,mcs->len);
+            i += mcs->len;
+            kind = HL_ST_COMMENT;
+            arg = 1;
+            continue;
+        }
+
+        /* OCaml quote: a char literal if one fits, else a type variable
+         * ('a), unless it is the prime of an identifier (x'). */
+        if ((flags & HL_PRIME_QUOTES) && c == '\'' &&
+            !(i > 0 && hlIsIdentChar((unsigned char)p[i-1])))
+        {
+            int len = (flags & HL_HIGHLIGHT_STRINGS) ?
+                      hlCharLiteralLen(p+i,n-i) : 0;
+            if (len) {
+                memset(hl+i,HL_STRING,len);
+                i += len;
+                prev_sep = 0;
+                continue;
+            }
+            if (i+1 < n && (isalpha((unsigned char)p[i+1]) || p[i+1] == '_')) {
+                int j = i+1;
+                while (j < n && (isalnum((unsigned char)p[j]) || p[j] == '_'))
+                    j++;
+                memset(hl+i,HL_KEYWORD2,j-i);
+                i = j;
+                prev_sep = 0;
+                continue;
+            }
+        }
+
+        /* String starts. */
+        if (flags & HL_HIGHLIGHT_STRINGS) {
+            if (c == '"' || (c == '\'' && !(flags & HL_PRIME_QUOTES))) {
+                hl[i++] = HL_STRING;
+                kind = HL_ST_STRING;
+                arg = c;
+                prev_sep = 0;
+                continue;
+            }
+            if ((flags & HL_QUOTED_STRINGS) && c == '{') {
+                int idlen = hlQuotedIdLen(p+i+1,n-i-1);
+                int end = i+1+idlen;
+                if (end < n && p[end] == '|') {
+                    memset(hl+i,HL_STRING,end+1-i);
+                    arg = hlQuotedIdHash(p+i+1,idlen);
+                    kind = HL_ST_QSTRING;
+                    i = end+1;
+                    prev_sep = 0;
+                    continue;
+                }
+            }
+        }
+
+        /* Non printable chars. */
+        if (!isprint(c)) {
+            hl[i++] = HL_NONPRINT;
             prev_sep = 0;
             continue;
         }
 
-        /* Handle "" and '' */
-        if (in_string) {
-            row->hl[i] = HL_STRING;
-            if (*p == '\\') {
-                row->hl[i+1] = HL_STRING;
-                p += 2; i += 2;
-                prev_sep = 0;
-                continue;
+        /* Numbers: a digit at the start of a word, then the rest of the
+         * literal (0x1F, 1_000, 3.14, 1e-5, 0x1p-3, 10UL, 42L). */
+        if ((flags & HL_HIGHLIGHT_NUMBERS) && prev_sep && isdigit(c)) {
+            int hex = c == '0' && i+1 < n && (p[i+1] == 'x' || p[i+1] == 'X');
+            int j = i+1;
+            while (j < n) {
+                int d = (unsigned char)p[j], e = (unsigned char)p[j-1];
+                if (isalnum(d) || d == '_' || d == '.') {
+                    j++;
+                } else if ((d == '+' || d == '-') &&
+                           (hex ? (e == 'p' || e == 'P') :
+                                  (e == 'e' || e == 'E'))) {
+                    j++;
+                } else {
+                    break;
+                }
             }
-            if (*p == in_string) in_string = 0;
-            p++; i++;
-            continue;
-        } else {
-            if (*p == '"' || *p == '\'') {
-                in_string = *p;
-                row->hl[i] = HL_STRING;
-                p++; i++;
-                prev_sep = 0;
-                continue;
-            }
-        }
-
-        /* Handle non printable chars. */
-        if (!isprint(*p)) {
-            row->hl[i] = HL_NONPRINT;
-            p++; i++;
+            memset(hl+i,HL_NUMBER,j-i);
+            i = j;
             prev_sep = 0;
             continue;
         }
 
-        /* Handle numbers */
-        if ((isdigit(*p) && (prev_sep || row->hl[i-1] == HL_NUMBER)) ||
-            (*p == '.' && i >0 && row->hl[i-1] == HL_NUMBER)) {
-            row->hl[i] = HL_NUMBER;
-            p++; i++;
-            prev_sep = 0;
-            continue;
-        }
-
-        /* Handle keywords and lib calls */
+        /* Keywords and types. */
         if (prev_sep) {
             int j;
             for (j = 0; keywords[j]; j++) {
@@ -765,35 +1286,56 @@ void editorUpdateSyntax(erow *row) {
                 int kw2 = keywords[j][klen-1] == '|';
                 if (kw2) klen--;
 
-                if (i+klen <= row->rsize &&
-                    !memcmp(p,keywords[j],klen) &&
-                    is_separator(*(p+klen)))
+                /* render is NUL terminated, so p[n] is a separator. */
+                if (i+klen <= n &&
+                    !memcmp(p+i,keywords[j],klen) &&
+                    is_separator((unsigned char)p[i+klen]))
                 {
-                    /* Keyword */
-                    memset(row->hl+i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
-                    p += klen;
+                    memset(hl+i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
                     i += klen;
                     break;
                 }
             }
             if (keywords[j] != NULL) {
                 prev_sep = 0;
-                continue; /* We had a keyword match */
+                continue;
             }
         }
 
         /* Not special chars */
-        prev_sep = is_separator(*p);
-        p++; i++;
+        prev_sep = is_separator(c);
+        i++;
     }
 
-    /* Propagate syntax change to the next row if the open commen
-     * state changed. This may recursively affect all the following rows
-     * in the file. */
-    int oc = editorRowHasOpenComment(row);
-    if (row->hl_oc != oc && row->idx+1 < E.numrows)
-        editorUpdateSyntax(&E.row[row->idx+1]);
-    row->hl_oc = oc;
+    /* A string left open at the end of the row only carries over if the
+     * language allows multi row strings or the newline is escaped. */
+    if (kind == HL_ST_STRING && !(flags & HL_MULTILINE_STRINGS) &&
+        !escaped_eol) kind = HL_ST_NORMAL;
+    return kind == HL_ST_NORMAL ? HL_ST_NORMAL : HL_ST(kind,arg);
+}
+
+/* Set every byte of row->hl (that corresponds to every character in the line)
+ * to the right syntax highlight type (HL_* defines). The state a row ends in
+ * is where the next row starts, so while that state changes, the following
+ * rows are highlighted again too. This is a loop, not recursion: opening a
+ * comment at the top of a huge file must not overflow the stack. */
+void editorUpdateSyntax(erow *row) {
+    while (1) {
+        row->hl = growBuf(row->hl,&row->hl_cap,row->rsize);
+        memset(row->hl,HL_NORMAL,row->rsize);
+        if (E.syntax == NULL) { /* No syntax, everything is HL_NORMAL. */
+            row->hl_state = HL_ST_NORMAL;
+            return;
+        }
+
+        int in = row->idx > 0 ? E.row[row->idx-1].hl_state : HL_ST_NORMAL;
+        if (in == HL_ST_INVALID) in = HL_ST_NORMAL;
+        int out = editorHighlightRow(row,in);
+        int changed = out != row->hl_state;
+        row->hl_state = out;
+        if (!changed || row->idx+1 >= E.numrows) return;
+        row = &E.row[row->idx+1];
+    }
 }
 
 /* Maps syntax highlight token types to terminal colors. */
@@ -811,21 +1353,26 @@ int editorSyntaxToColor(int hl) {
 }
 
 /* Select the syntax highlight scheme depending on the filename,
- * setting it in the global state E.syntax. */
+ * setting it in the global state E.syntax (NULL if nothing matches). */
 void editorSelectSyntaxHighlight(char *filename) {
-    for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
-        struct editorSyntax *s = HLDB+j;
-        unsigned int i = 0;
-        while(s->filematch[i]) {
-            char *p;
-            int patlen = strlen(s->filematch[i]);
-            if ((p = strstr(filename,s->filematch[i])) != NULL) {
-                if (s->filematch[i][0] != '.' || p[patlen] == '\0') {
-                    E.syntax = s;
-                    return;
-                }
+    const char *base = strrchr(filename,'/');
+    base = base ? base+1 : filename;
+    size_t blen = strlen(base);
+    E.syntax = NULL;
+    for (int j = 0; j < HLDB_ENTRIES; j++) {
+        struct editorSyntax *s = HLDB[j];
+        for (int i = 0; s->filenames[i]; i++) {
+            if (!strcmp(base,s->filenames[i])) {
+                E.syntax = s;
+                return;
             }
-            i++;
+        }
+        for (int i = 0; s->extensions[i]; i++) {
+            size_t elen = strlen(s->extensions[i]);
+            if (blen > elen && !strcmp(base+blen-elen,s->extensions[i])) {
+                E.syntax = s;
+                return;
+            }
         }
     }
 }
@@ -883,13 +1430,13 @@ void editorInsertRow(int at, char *s, size_t len) {
     memcpy(E.row[at].chars,s,len+1);
     E.row[at].hl = NULL;
     E.row[at].hl_cap = 0;
-    E.row[at].hl_oc = 0;
+    E.row[at].hl_state = HL_ST_INVALID; /* So the rows below get re-lexed. */
     E.row[at].render = NULL;
     E.row[at].render_cap = 0;
     E.row[at].rsize = 0;
     E.row[at].idx = at;
+    E.numrows++; /* First, so highlight changes can reach the last row. */
     editorUpdateRow(E.row+at);
-    E.numrows++;
     E.dirty++;
 }
 
@@ -912,6 +1459,8 @@ void editorDelRow(int at) {
     for (int j = at; j < E.numrows-1; j++) E.row[j].idx--;
     E.numrows--;
     E.dirty++;
+    /* The row that moved up now follows a different row: re-lex it. */
+    if (at < E.numrows) editorUpdateSyntax(E.row+at);
 }
 
 /* Turn the editor rows into a single heap-allocated string.
@@ -1779,25 +2328,113 @@ void editorMoveFileEnd(void) {
     editorSetCol(E.row[last].size);
 }
 
+/* Remove 'len' chars at 'at' from 'row'. */
+static void editorRowDelRange(erow *row, int at, int len) {
+    memmove(row->chars+at,row->chars+at+len,row->size-at-len+1);
+    row->size -= len;
+}
+
+/* Insert the 'len' chars of 's' at 'at' in 'row'. */
+static void editorRowInsRange(erow *row, int at, const char *s, int len) {
+    row->chars = growBuf(row->chars,&row->chars_cap,row->size+len+1);
+    memmove(row->chars+at+len,row->chars+at,row->size-at+1);
+    memcpy(row->chars+at,s,len);
+    row->size += len;
+}
+
+/* Where a cursor at 'col' lands after 'len' chars at 'at' are removed. */
+static int editorColAfterDel(int col, int at, int len) {
+    if (col >= at+len) return col-len;
+    return col > at ? at : col;
+}
+
+/* If the text of 'row' between 'start' and 'end' is exactly one block
+ * comment, return 1. "(* a *) x (* b *)" starts and ends like one but is
+ * two, so this follows the comment's nesting to its real end. */
+static int editorRowIsOneBlockComment(erow *row, int start, int end) {
+    const hldelim *mcs = &E.syntax->block_start;
+    const hldelim *mce = &E.syntax->block_end;
+    char *p = row->chars;
+    if (end-start < mcs->len+mce->len || !hlAt(p,start,end,mcs)) return 0;
+    int depth = 1;
+    for (int i = start+mcs->len; i < end; ) {
+        if (hlAt(p,i,end,mce)) {
+            i += mce->len;
+            if (--depth == 0) return i == end;
+        } else if ((E.syntax->flags & HL_NESTED_COMMENTS) &&
+                   hlAt(p,i,end,mcs)) {
+            i += mcs->len;
+            depth++;
+        } else {
+            i++;
+        }
+    }
+    return 0;
+}
+
+/* True if Ctrl-/ has something to do on 'filerow'. A language without line
+ * comments wraps lines in a block comment, which a blank line does not get. */
+int editorCanToggleComment(int filerow) {
+    if (filerow >= E.numrows || E.syntax == NULL) return 0;
+    if (E.syntax->line_comment.len) return 1;
+    if (!E.syntax->block_start.len) return 0;
+    erow *row = &E.row[filerow];
+    for (int i = 0; i < row->size; i++)
+        if (!isspace((unsigned char)row->chars[i])) return 1;
+    return 0;
+}
+
+/* Ctrl-/: toggle a line comment on 'filerow'. Languages without line
+ * comments (OCaml) wrap the line in "(* " ... " *)" instead, or unwrap it.
+ * The cursor stays on the same character. */
 void editorToggleLineComment(int filerow) {
-    if (filerow >= E.numrows || E.syntax == NULL ||
-        E.syntax->singleline_comment_start[0] == '\0') return;
+    if (!editorCanToggleComment(filerow)) return;
 
     erow *row = &E.row[filerow];
-    char *prefix = E.syntax->singleline_comment_start;
+    const hldelim *scs = &E.syntax->line_comment;
+    const hldelim *mcs = &E.syntax->block_start;
+    const hldelim *mce = &E.syntax->block_end;
+    int col = E.coloff + E.cx;
+    int on_row = filerow == E.rowoff + E.cy;
 
     int indent = 0;
-    while (indent < row->size && isspace(row->chars[indent])) indent++;
+    while (indent < row->size && isspace((unsigned char)row->chars[indent]))
+        indent++;
 
-    if (indent + 1 < row->size &&
-        row->chars[indent]   == prefix[0] &&
-        row->chars[indent+1] == prefix[1]) {
-        editorRowDelChar(row, indent);
-        editorRowDelChar(row, indent);
+    if (scs->len) {
+        if (hlAt(row->chars,indent,row->size,scs)) {
+            editorRowDelRange(row,indent,scs->len);
+            col = editorColAfterDel(col,indent,scs->len);
+        } else {
+            editorRowInsRange(row,indent,scs->s,scs->len);
+            if (col >= indent) col += scs->len;
+        }
     } else {
-        editorRowInsertChar(row, indent,   prefix[0]);
-        editorRowInsertChar(row, indent+1, prefix[1]);
+        int end = row->size;
+        while (end > indent && isspace((unsigned char)row->chars[end-1]))
+            end--;
+        if (editorRowIsOneBlockComment(row,indent,end)) {
+            /* Unwrap, taking one space of padding on each side with it. */
+            int close = end-mce->len;
+            if (close > indent+mcs->len && row->chars[close-1] == ' ') close--;
+            editorRowDelRange(row,close,end-close);
+            col = editorColAfterDel(col,close,end-close);
+            int open = mcs->len;
+            if (indent+open < close && row->chars[indent+open] == ' ') open++;
+            editorRowDelRange(row,indent,open);
+            col = editorColAfterDel(col,indent,open);
+        } else {
+            editorRowInsRange(row,end,mce->s,mce->len);
+            editorRowInsRange(row,end," ",1);
+            if (col > end) col += mce->len+1;
+            editorRowInsRange(row,indent," ",1);
+            editorRowInsRange(row,indent,mcs->s,mcs->len);
+            if (col >= indent) col += mcs->len+1;
+        }
     }
+    editorUpdateRow(row);
+    E.dirty++;
+    if (on_row) editorSetCol(col);
 }
 
 /* True if 'filerow' starts with at least one tab stop's worth of spaces. */
@@ -2436,6 +3073,13 @@ static void ftBuildRoot(const char *filepath) {
     root->path = dirpath;
     const char *rs = strrchr(dirpath, '/');
     const char *base = (rs && rs[1]) ? rs+1 : dirpath;
+    /* A file opened by a bare name lives in ".": label it with the name of
+     * the working directory rather than a lone dot. */
+    char cwd[4096];
+    if (!slash && getcwd(cwd, sizeof(cwd))) {
+        char *cs = strrchr(cwd, '/');
+        base = (cs && cs[1]) ? cs+1 : cwd;
+    }
     size_t blen = strlen(base);
     root->name = malloc(blen+1); memcpy(root->name, base, blen+1);
     root->is_dir = 1;
@@ -2735,6 +3379,7 @@ void editorProcessKeypress(int fd) {
         editorFind(fd);
         break;
     case CTRL_SLASH:
+        if (!editorCanToggleComment(E.rowoff + E.cy)) break;
         editorPushSnapshot();
         undo_last_insert = 0;
         editorSelClear();
@@ -2992,13 +3637,17 @@ int main(int argc, char **argv) {
     }
 
     initEditor();
+    editorLoadLanguages(argv[0]);
     editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
     editorPushSnapshot();
     undo_saved = undo_cur;
     E.dirty = 0;
     enableRawMode(STDIN_FILENO);
-    editorSetStatusMessage("");
+    if (hl_load_errors > 1)
+        editorSetStatusMessage("%s (+%d more)",hl_load_error,hl_load_errors-1);
+    else
+        editorSetStatusMessage("%s",hl_load_error);
     while(1) {
         editorRefreshScreen();
         editorProcessKeypress(STDIN_FILENO);

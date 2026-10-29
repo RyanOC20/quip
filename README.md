@@ -50,5 +50,58 @@ Shortcuts:
 
 Quip does not depend on any library (not even curses).
 
+Languages
+---
+
+Syntax highlighting and <kbd>Ctrl</kbd>+<kbd>/</kbd> come from language files, one plain text `.lang` file per language. These ship in `langs/`:
+
+| File | Language | Files |
+|---|---|---|
+| `c.lang` | C/C++ | `.c` `.h` `.cpp` `.hpp` `.cc` |
+| `ocaml.lang` | OCaml | `.ml` `.mli` |
+| `python.lang` | Python | `.py` `.pyw` `.pyi` |
+| `rust.lang` | Rust | `.rs` |
+| `javascript.lang` | JavaScript, TypeScript | `.js` `.mjs` `.cjs` `.jsx` `.ts` `.mts` `.cts` `.tsx` |
+| `go.lang` | Go | `.go` |
+| `sh.lang` | Shell | `.sh` `.bash` `.zsh`, plus `.bashrc` `.bash_profile` `.zshrc` `.zprofile` `.profile` |
+
+`make install` copies them next to the binary, to `$PREFIX/share/quip/langs`. C is also built into quip, so a lone `quip` binary still highlights C. When a language has no line comments (OCaml), <kbd>Ctrl</kbd>+<kbd>/</kbd> wraps the line in its block comment, `(* ... *)`, and unwraps it when pressed again.
+
+To add a language or change a shipped one, put a `.lang` file in `~/.config/quip/langs/`. No rebuild is needed. A file there replaces a shipped file with the same name, so your own `python.lang` replaces the shipped one and your own `c.lang` replaces the built-in C. Quip looks in these folders, in order:
+
+1. `~/.config/quip/langs/` (or `$XDG_CONFIG_HOME/quip/langs/`)
+2. `$QUIP_LANGDIR`, if set
+3. `langs/` next to the quip binary, so `./quip` works straight from a checkout
+4. `../share/quip/langs/` next to the quip binary, where `make install` puts them
+5. `~/.local/share/quip/langs/`, then `quip/langs/` in each `$XDG_DATA_DIRS` folder (`/usr/local/share`, `/usr/share`)
+
+A language file looks like this:
+
+    quip-lang 1
+    # Lines starting with # are comments.
+    extensions    .py .pyw
+    filenames     SConstruct
+    line_comment  #
+    block_comment /* */
+    features      strings numbers
+    keywords      def class if else return
+                  while for in
+    types         int float str
+
+* `quip-lang 1` must come first.
+* `extensions` or `filenames` is required. `filenames` matches the whole file name, like `Makefile`.
+* `line_comment` and `block_comment` are optional, and can be any length.
+* `types` are colored differently from `keywords`.
+* An indented line continues the line above.
+* `features` switches on parts of quip's highlighter:
+  * `strings`: `"..."` and `'...'`
+  * `numbers`: literals like `0x1F`, `3.14` and `1e-5`
+  * `nested_comments`: block comments nest
+  * `multiline_strings`: strings may span lines
+  * `quoted_strings`: OCaml `{id|...|id}` strings
+  * `prime_quotes`: OCaml and Rust `'`, read as a char literal when one fits, else a type variable or lifetime (`'a`)
+
+If a file has a mistake, quip skips it and names the file and line on the status bar at startup.
+
 Kilo was written by Salvatore Sanfilippo aka antirez and is released
 under the BSD 2 clause license.

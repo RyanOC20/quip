@@ -1,0 +1,18 @@
+quip-lang 1
+# Rust. 'a lifetimes get the type color; 'x' char literals are strings.
+# Known gap: raw strings (r"..." and r#"..."#) are read as plain strings.
+
+extensions    .rs
+line_comment  //
+block_comment /* */
+features      strings numbers nested_comments multiline_strings prime_quotes
+
+keywords
+  as async await break const continue crate dyn else enum extern false fn
+  for if impl in let loop match mod move mut pub ref return self Self
+  static struct super trait true type unsafe use where while macro_rules
+  union
+
+types
+  i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char
+  str String Vec Option Result Box Rc Arc
