@@ -1,0 +1,21 @@
+quip-lang 1
+# Java.
+# Known gaps: """text blocks""" that span lines are not recognised, and
+# @annotations get no color of their own.
+
+extensions    .java
+line_comment  //
+block_comment /* */
+features      strings numbers
+
+keywords
+  abstract assert break case catch class const continue default do else
+  enum extends final finally for goto if implements import instanceof
+  interface native new package private protected public return static
+  strictfp super switch synchronized this throw throws transient try
+  volatile while true false null var record yield sealed permits
+
+types
+  boolean byte char short int long float double void String Object
+  Integer Long Double Float Boolean Character Byte Short List ArrayList
+  Map HashMap Set HashSet Optional

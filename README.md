@@ -57,7 +57,10 @@ Syntax highlighting and <kbd>Ctrl</kbd>+<kbd>/</kbd> come from language files, o
 
 | File | Language | Files |
 |---|---|---|
-| `c.lang` | C/C++ | `.c` `.h` `.cpp` `.hpp` `.cc` |
+| `c.lang` | C | `.c` |
+| `cpp.lang` | C++, and C/C++ headers | `.cpp` `.cc` `.cxx` `.c++` `.h` `.hpp` `.hh` `.hxx` `.h++` `.ipp` `.tpp` |
+| `java.lang` | Java | `.java` |
+| `markdown.lang` | Markdown (comments only) | `.md` `.markdown` `.mdown` `.mkd` `.mkdn` |
 | `ocaml.lang` | OCaml | `.ml` `.mli` |
 | `python.lang` | Python | `.py` `.pyw` `.pyi` |
 | `rust.lang` | Rust | `.rs` |
@@ -65,9 +68,9 @@ Syntax highlighting and <kbd>Ctrl</kbd>+<kbd>/</kbd> come from language files, o
 | `go.lang` | Go | `.go` |
 | `sh.lang` | Shell | `.sh` `.bash` `.zsh`, plus `.bashrc` `.bash_profile` `.zshrc` `.zprofile` `.profile` |
 
-`make install` copies them next to the binary, to `$PREFIX/share/quip/langs`. C is also built into quip, so a lone `quip` binary still highlights C. When a language has no line comments (OCaml), <kbd>Ctrl</kbd>+<kbd>/</kbd> wraps the line in its block comment, `(* ... *)`, and unwraps it when pressed again.
+`make install` copies them next to the binary, to `$PREFIX/share/quip/langs`. C and C++ are also built into quip, so a lone `quip` binary still highlights them. When a language has no line comments (OCaml, Markdown), <kbd>Ctrl</kbd>+<kbd>/</kbd> wraps the line in its block comment, such as `(* ... *)` or `<!-- ... -->`, and unwraps it when pressed again.
 
-To add a language or change a shipped one, put a `.lang` file in `~/.config/quip/langs/`. No rebuild is needed. A file there replaces a shipped file with the same name, so your own `python.lang` replaces the shipped one and your own `c.lang` replaces the built-in C. Quip looks in these folders, in order:
+To add a language or change a shipped one, put a `.lang` file in `~/.config/quip/langs/`. No rebuild is needed. A file there replaces a shipped file with the same name, so your own `python.lang` replaces the shipped one and your own `c.lang` replaces the built-in C and C++. Quip looks in these folders, in order:
 
 1. `~/.config/quip/langs/` (or `$XDG_CONFIG_HOME/quip/langs/`)
 2. `$QUIP_LANGDIR`, if set

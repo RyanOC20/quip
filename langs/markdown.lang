@@ -1,0 +1,8 @@
+quip-lang 1
+# Markdown. Ctrl-/ wraps the line in an HTML comment, <!-- ... -->.
+# Only comments are colored: headings, emphasis, links and code are not.
+# Strings and numbers stay off, since apostrophes and numbers in prose
+# would otherwise light up.
+
+extensions    .md .markdown .mdown .mkd .mkdn
+block_comment <!-- -->

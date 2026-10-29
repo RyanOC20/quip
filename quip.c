@@ -261,8 +261,9 @@ void editorSetStatusMessage(const char *fmt, ...);
  *   each $XDG_DATA_DIRS entry + /quip/langs (/usr/local/share, /usr/share)
  *
  * A file overrides any later file with the same name, so ~/.config/quip/
- * langs/python.lang replaces the installed python.lang. C is also built in
- * below, so a bare binary still highlights it; any c.lang replaces it.
+ * langs/python.lang replaces the installed python.lang. C and C++ are also
+ * built in below, as one entry, so a bare binary still highlights them; any
+ * c.lang replaces it, and C++ then comes from cpp.lang.
  *
  * A file only supplies words, comment delimiters and feature flags. How text
  * is lexed (strings, nesting, OCaml quotes) stays in editorHighlightRow, and
@@ -282,7 +283,7 @@ char *C_HL_keywords[] = {
 
 	/* C++ Keywords */
 	"alignas","alignof","and","and_eq","asm","bitand","bitor","class",
-	"compl","constexpr","const_cast","deltype","delete","dynamic_cast",
+	"compl","constexpr","const_cast","decltype","delete","dynamic_cast",
 	"explicit","export","false","friend","inline","mutable","namespace",
 	"new","noexcept","not","not_eq","nullptr","operator","or","or_eq",
 	"private","protected","public","reinterpret_cast","static_assert",
@@ -1076,6 +1077,13 @@ static int hlAt(const char *p, int i, int n, const hldelim *d) {
     return d->len && i+d->len <= n && !memcmp(p+i,d->s,d->len);
 }
 
+/* True for chars that a keyword cannot touch: identifier chars ('$' for
+ * JavaScript and shell names, UTF-8 bytes) and '#', so the "if" in C's "#if"
+ * stays uncolored like the rest of the preprocessor directives. */
+static int hlIsWordChar(int c) {
+    return isalnum(c) || c == '_' || c == '$' || c == '#' || c >= 0x80;
+}
+
 /* True for chars that continue an identifier, OCaml primes included. */
 static int hlIsIdentChar(int c) {
     return isalnum(c) || c == '_' || c == '\'';
@@ -1278,18 +1286,19 @@ static int editorHighlightRow(erow *row, int state) {
             continue;
         }
 
-        /* Keywords and types. */
-        if (prev_sep) {
+        /* Keywords and types: a whole word, so "int" matches in "vector<int>"
+         * and "std::string" but not in "print". */
+        if (i == 0 || !hlIsWordChar((unsigned char)p[i-1])) {
             int j;
             for (j = 0; keywords[j]; j++) {
                 int klen = strlen(keywords[j]);
                 int kw2 = keywords[j][klen-1] == '|';
                 if (kw2) klen--;
 
-                /* render is NUL terminated, so p[n] is a separator. */
+                /* render is NUL terminated, so p[n] ends a word. */
                 if (i+klen <= n &&
                     !memcmp(p+i,keywords[j],klen) &&
-                    is_separator((unsigned char)p[i+klen]))
+                    !hlIsWordChar((unsigned char)p[i+klen]))
                 {
                     memset(hl+i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
                     i += klen;
