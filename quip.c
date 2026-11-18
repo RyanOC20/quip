@@ -109,6 +109,8 @@
 #define HL_PRIME_QUOTES      (1<<5) /* ' opens a char literal only when one
                                        fits; otherwise it is a type variable
                                        ('a) or an identifier prime (x'). */
+#define HL_WORD_START_COMMENTS (1<<6) /* A line comment starts only at the
+                                         start of a word, as # in shell. */
 
 /* Lexer state at the end of a row, carried into the next row. The low byte
  * is the kind; the rest is an argument: the comment nesting depth, the
@@ -354,6 +356,7 @@ static const struct { const char *name; int flag; } HL_FEATURES[] = {
     {"multiline_strings", HL_MULTILINE_STRINGS},
     {"quoted_strings",    HL_QUOTED_STRINGS},
     {"prime_quotes",      HL_PRIME_QUOTES},
+    {"word_start_comments", HL_WORD_START_COMMENTS},
 };
 
 /* Problems found while loading language files, shown on the status line
@@ -1122,6 +1125,12 @@ static int hlIsWordChar(int c) {
     return isalnum(c) || c == '_' || c == '$' || c == '#' || c >= 0x80;
 }
 
+/* True for chars that end a shell word, so a # after them starts a comment:
+ * ${#arr}, x#y and a=#x are not comments, but cmd;# and (# are. */
+static int hlIsShellWordBreak(int c) {
+    return isspace(c) || (c && strchr(";&|()<>",c));
+}
+
 /* True for chars that continue an identifier, OCaml primes included. */
 static int hlIsIdentChar(int c) {
     return isalnum(c) || c == '_' || c == '\'';
@@ -1166,7 +1175,6 @@ static int editorHighlightRow(erow *row, int state) {
     int n = row->rsize;
     int kind = state & 0xff, arg = state >> 8;
     int i = 0;
-    int prev_sep = 1;    /* Does 'i' point to the start of a word? */
     int escaped_eol = 0; /* Row ends in a backslash inside a string. */
 
     while (i < n) {
@@ -1177,10 +1185,7 @@ static int editorHighlightRow(erow *row, int state) {
             if (hlAt(p,i,n,mce)) {
                 memset(hl+i,HL_MLCOMMENT,mce->len);
                 i += mce->len;
-                if (--arg == 0) {
-                    kind = HL_ST_NORMAL;
-                    prev_sep = 1;
-                }
+                if (--arg == 0) kind = HL_ST_NORMAL;
             } else if ((flags & HL_NESTED_COMMENTS) && hlAt(p,i,n,mcs)) {
                 memset(hl+i,HL_MLCOMMENT,mcs->len);
                 i += mcs->len;
@@ -1205,10 +1210,7 @@ static int editorHighlightRow(erow *row, int state) {
                 continue;
             }
             i++;
-            if (c == arg) {
-                kind = HL_ST_NORMAL;
-                prev_sep = 0;
-            }
+            if (c == arg) kind = HL_ST_NORMAL;
             continue;
         }
 
@@ -1224,7 +1226,6 @@ static int editorHighlightRow(erow *row, int state) {
                     memset(hl+i,HL_STRING,end+1-i);
                     i = end+1;
                     kind = HL_ST_NORMAL;
-                    prev_sep = 0;
                     continue;
                 }
             }
@@ -1232,8 +1233,12 @@ static int editorHighlightRow(erow *row, int state) {
             continue;
         }
 
-        /* Single line comment: the rest of the row. */
-        if (prev_sep && hlAt(p,i,n,scs)) {
+        /* Single line comment: the rest of the row. It starts anywhere
+         * outside a string, or only at the start of a word in shell. */
+        if (hlAt(p,i,n,scs) &&
+            (!(flags & HL_WORD_START_COMMENTS) || i == 0 ||
+             hlIsShellWordBreak((unsigned char)p[i-1])))
+        {
             memset(hl+i,HL_COMMENT,n-i);
             break;
         }
@@ -1257,7 +1262,6 @@ static int editorHighlightRow(erow *row, int state) {
             if (len) {
                 memset(hl+i,HL_STRING,len);
                 i += len;
-                prev_sep = 0;
                 continue;
             }
             if (i+1 < n && (isalpha((unsigned char)p[i+1]) || p[i+1] == '_')) {
@@ -1266,7 +1270,6 @@ static int editorHighlightRow(erow *row, int state) {
                     j++;
                 memset(hl+i,HL_KEYWORD2,j-i);
                 i = j;
-                prev_sep = 0;
                 continue;
             }
         }
@@ -1277,7 +1280,6 @@ static int editorHighlightRow(erow *row, int state) {
                 hl[i++] = HL_STRING;
                 kind = HL_ST_STRING;
                 arg = c;
-                prev_sep = 0;
                 continue;
             }
             if ((flags & HL_QUOTED_STRINGS) && c == '{') {
@@ -1288,7 +1290,6 @@ static int editorHighlightRow(erow *row, int state) {
                     arg = hlQuotedIdHash(p+i+1,idlen);
                     kind = HL_ST_QSTRING;
                     i = end+1;
-                    prev_sep = 0;
                     continue;
                 }
             }
@@ -1297,7 +1298,6 @@ static int editorHighlightRow(erow *row, int state) {
         /* Non printable chars. */
         if (!isprint(c)) {
             hl[i++] = HL_NONPRINT;
-            prev_sep = 0;
             continue;
         }
 
@@ -1324,7 +1324,6 @@ static int editorHighlightRow(erow *row, int state) {
             }
             memset(hl+i,HL_NUMBER,j-i);
             i = j;
-            prev_sep = 0;
             continue;
         }
 
@@ -1347,14 +1346,10 @@ static int editorHighlightRow(erow *row, int state) {
                     break;
                 }
             }
-            if (keywords[j] != NULL) {
-                prev_sep = 0;
-                continue;
-            }
+            if (keywords[j] != NULL) continue;
         }
 
         /* Not special chars */
-        prev_sep = is_separator(c);
         i++;
     }
 
