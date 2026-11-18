@@ -1802,6 +1802,61 @@ static int editorCursorCharCol(void) {
     return n;
 }
 
+/* Bracket matching. When the cursor is over a bracket, it and its partner
+ * get a gray background; a bracket without a partner gets a red one. */
+#define BRACKET_NONE      0
+#define BRACKET_MATCHED   1
+#define BRACKET_UNMATCHED 2
+
+/* True if the render column holds code: brackets in strings and comments
+ * are text, so they neither match nor count toward nesting. */
+static int editorIsCodeAt(const erow *row, int rcol) {
+    unsigned char h = row->hl[rcol];
+    return h != HL_STRING && h != HL_COMMENT && h != HL_MLCOMMENT;
+}
+
+/* If the cursor is over a bracket in code, store its row and render column
+ * in *brow,*bcol and look for its partner of the same kind, (), [] or {},
+ * skipping nested pairs. On BRACKET_MATCHED the partner's position is in
+ * *mrow,*mcol. Scans the whole file at worst, which is a plain byte loop. */
+static int editorFindBracketPair(int *brow, int *bcol, int *mrow, int *mcol) {
+    static const char open[] = "([{", close[] = ")]}";
+    int y = E.rowoff+E.cy, col = E.coloff+E.cx;
+    if (y >= E.numrows) return BRACKET_NONE;
+    erow *row = &E.row[y];
+    if (col >= row->size) return BRACKET_NONE;
+
+    char c = row->chars[col];
+    const char *o = c ? strchr(open,c) : NULL;
+    const char *cl = c ? strchr(close,c) : NULL;
+    if (!o && !cl) return BRACKET_NONE;
+    int x = editorCharToRenderCol(row,col);
+    if (!editorIsCodeAt(row,x)) return BRACKET_NONE;
+
+    char want = o ? close[o-open] : open[cl-close];
+    int dir = o ? 1 : -1, depth = 0;
+    *brow = y;
+    *bcol = x;
+    for (;;) {
+        x += dir;
+        while (x < 0 || x >= E.row[y].rsize) {
+            y += dir;
+            if (y < 0 || y >= E.numrows) return BRACKET_UNMATCHED;
+            x = dir > 0 ? 0 : E.row[y].rsize-1;
+        }
+        char ch = E.row[y].render[x];
+        if (ch != c && ch != want) continue;
+        if (!editorIsCodeAt(&E.row[y],x)) continue;
+        if (ch == c) {
+            depth++;
+        } else if (depth-- == 0) {
+            *mrow = y;
+            *mcol = x;
+            return BRACKET_MATCHED;
+        }
+    }
+}
+
 static void editorSelSetAnchor(void) {
     if (!E.sel_active) {
         E.sel_active     = 1;
@@ -1866,6 +1921,16 @@ void editorRefreshScreen(void) {
     editorUpdateGeometry();
     abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
     abAppend(&ab,"\x1b[H",3); /* Go home. */
+
+    /* The bracket under the cursor and its partner, if any. No cursor is
+     * shown in the text while the file tree has focus. */
+    int br_row = -1, br_col = -1, bm_row = -1, bm_col = -1, br_bg = 49;
+    if (!(E.ft_open && E.ft_focus)) {
+        int kind = editorFindBracketPair(&br_row,&br_col,&bm_row,&bm_col);
+        if (kind == BRACKET_MATCHED) br_bg = 100;        /* gray */
+        else if (kind == BRACKET_UNMATCHED) br_bg = 41;  /* red */
+    }
+
     for (y = 0; y < E.screenrows; y++) {
         int filerow = E.rowoff+y;
 
@@ -1911,7 +1976,7 @@ void editorRefreshScreen(void) {
         int len = r->rsize - E.coloff;
         int current_color = -1;
         int in_selection = 0;
-        int in_trail = 0;
+        int cur_bg = 49; /* Background SGR in effect; 49 is the default. */
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
@@ -1941,13 +2006,24 @@ void editorRefreshScreen(void) {
                     }
                 }
 
-                /* Trailing-space highlight; a selection takes precedence. */
-                int want_trail = rcol >= trail_rcol && !in_selection;
-                if (want_trail != in_trail) {
+                /* Background: a selection takes precedence, then the
+                 * matched or unmatched brackets, then trailing spaces. */
+                int want_bg = 49;
+                if (!in_selection) {
+                    if (filerow == br_row && rcol == br_col)
+                        want_bg = br_bg;
+                    else if (filerow == bm_row && rcol == bm_col)
+                        want_bg = br_bg;
+                    else if (rcol >= trail_rcol)
+                        want_bg = 41;
+                }
+                if (want_bg != cur_bg) {
                     if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                     run_start = j;
-                    abAppend(&ab, want_trail ? "\x1b[41m" : "\x1b[49m", 5);
-                    in_trail = want_trail;
+                    char sgr[8];
+                    int slen = snprintf(sgr,sizeof(sgr),"\x1b[%dm",want_bg);
+                    abAppend(&ab,sgr,slen);
+                    cur_bg = want_bg;
                 }
 
                 if (hl[j] == HL_NONPRINT) {
@@ -1988,7 +2064,8 @@ void editorRefreshScreen(void) {
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
         }
         abAppend(&ab,"\x1b[39m",5);
-        if (in_trail) abAppend(&ab,"\x1b[49m",5); /* keep red out of EOL erase */
+        /* Keep a colored background out of the EOL erase. */
+        if (cur_bg != 49) abAppend(&ab,"\x1b[49m",5);
         /* A selected newline extends the highlight to the edge of the screen
          * (erase to EOL with a reverse-video bg); otherwise it stops at the
          * last selected character. */
