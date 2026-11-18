@@ -111,14 +111,19 @@
                                        ('a) or an identifier prime (x'). */
 #define HL_WORD_START_COMMENTS (1<<6) /* A line comment starts only at the
                                          start of a word, as # in shell. */
+#define HL_TRIPLE_QUOTES     (1<<7) /* """...""" and '''...''' strings, which
+                                       may span rows (Python docstrings,
+                                       Java text blocks). */
 
 /* Lexer state at the end of a row, carried into the next row. The low byte
  * is the kind; the rest is an argument: the comment nesting depth, the
- * quote char of an open string, or the hash of a quoted string's id. */
+ * quote char of an open string or triple quoted string, or the hash of a
+ * quoted string's id. */
 #define HL_ST_NORMAL  0
 #define HL_ST_COMMENT 1
 #define HL_ST_STRING  2
 #define HL_ST_QSTRING 3
+#define HL_ST_TSTRING 4
 #define HL_ST(kind,arg) ((kind) | ((arg) << 8))
 #define HL_ST_INVALID (-1) /* Never highlighted yet; differs from any state. */
 
@@ -357,6 +362,7 @@ static const struct { const char *name; int flag; } HL_FEATURES[] = {
     {"quoted_strings",    HL_QUOTED_STRINGS},
     {"prime_quotes",      HL_PRIME_QUOTES},
     {"word_start_comments", HL_WORD_START_COMMENTS},
+    {"triple_quotes",     HL_TRIPLE_QUOTES},
 };
 
 /* Problems found while loading language files, shown on the status line
@@ -1214,6 +1220,26 @@ static int editorHighlightRow(erow *row, int state) {
             continue;
         }
 
+        /* Inside a """ or ''' string: only three of the same quote end it,
+         * and a backslash escapes the char after it, as in Python, raw
+         * strings included. A newline never ends it. */
+        if (kind == HL_ST_TSTRING) {
+            hl[i] = HL_STRING;
+            if (c == '\\') {
+                if (i+1 < n) hl[i+1] = HL_STRING;
+                i += 2;
+                continue;
+            }
+            if (c == arg && i+2 < n && p[i+1] == arg && p[i+2] == arg) {
+                memset(hl+i,HL_STRING,3);
+                i += 3;
+                kind = HL_ST_NORMAL;
+                continue;
+            }
+            i++;
+            continue;
+        }
+
         /* Inside a {id|...|id} string: only |id} with the same id ends it. */
         if (kind == HL_ST_QSTRING) {
             hl[i] = HL_STRING;
@@ -1277,6 +1303,15 @@ static int editorHighlightRow(erow *row, int state) {
         /* String starts. */
         if (flags & HL_HIGHLIGHT_STRINGS) {
             if (c == '"' || (c == '\'' && !(flags & HL_PRIME_QUOTES))) {
+                if ((flags & HL_TRIPLE_QUOTES) &&
+                    i+2 < n && p[i+1] == c && p[i+2] == c)
+                {
+                    memset(hl+i,HL_STRING,3);
+                    i += 3;
+                    kind = HL_ST_TSTRING;
+                    arg = c;
+                    continue;
+                }
                 hl[i++] = HL_STRING;
                 kind = HL_ST_STRING;
                 arg = c;
