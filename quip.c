@@ -52,6 +52,44 @@
 #include <fcntl.h>
 #include <signal.h>
 
+/* Terminal escape sequences (VT100 and xterm). Write them with abAppendLit
+ * or writeLit, which take the length from the literal so it is never counted
+ * by hand. The "" on both sides only compiles for a string literal: a char *
+ * would silently give sizeof(char *). */
+#define LIT_LEN(s)         ((int)sizeof("" s "")-1)
+#define abAppendLit(ab,s)  abAppend(ab,"" s "",LIT_LEN(s))
+#define writeLit(fd,s)     write(fd,"" s "",LIT_LEN(s))
+
+#define VT_HOME            "\x1b[H"
+#define VT_CLEAR_EOL       "\x1b[0K"     /* Erase to the end of the line. */
+#define VT_CURSOR_HIDE     "\x1b[?25l"
+#define VT_CURSOR_SHOW     "\x1b[?25h"
+#define VT_CURSOR_BAR      "\x1b[5 q"    /* Blinking bar cursor. */
+#define VT_CURSOR_DEFAULT  "\x1b[0 q"    /* The terminal's own cursor shape. */
+#define VT_CURSOR_FAR      "\x1b[999C\x1b[999B" /* To the bottom right. */
+#define VT_QUERY_CURSOR    "\x1b[6n"     /* Reply: ESC [ row ; col R */
+#define VT_ALT_SCREEN_ON   "\x1b[?1049h"
+#define VT_ALT_SCREEN_OFF  "\x1b[?1049l"
+#define VT_MOUSE_ON        "\x1b[?1002h" /* Button-event mouse reporting. */
+#define VT_MOUSE_OFF       "\x1b[?1002l"
+#define VT_CLIPBOARD_QUERY "\x1b]52;c;?\x07" /* OSC 52 clipboard read. */
+
+/* Text attributes (SGR). */
+#define VT_RESET           "\x1b[0m"     /* All attributes off. */
+#define VT_BOLD            "\x1b[1m"
+#define VT_REVERSE         "\x1b[7m"
+#define VT_REVERSE_OFF     "\x1b[27m"
+#define VT_FG_DEFAULT      "\x1b[39m"
+#define VT_BG_DEFAULT      "\x1b[49m"
+#define VT_FG_GRAY         "\x1b[90m"
+#define VT_BOLD_BLUE       "\x1b[1;34m"
+
+/* What each background means, as SGR numbers for "ESC [ n m". */
+#define BG_DEFAULT           49
+#define BG_TRAILING_SPACE    41  /* red */
+#define BG_BRACKET_MATCH     100 /* gray */
+#define BG_BRACKET_UNMATCHED 41  /* red */
+
 /* Syntax highlight types */
 #define HL_NORMAL 0
 #define HL_NONPRINT 1
@@ -713,9 +751,9 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
-        write(STDOUT_FILENO, "\x1b[?1002l", 8); /* disable button-event mouse reporting */
-        write(STDOUT_FILENO, "\x1b[0 q", 5);    /* restore the terminal's default cursor */
-        write(STDOUT_FILENO, "\x1b[?1049l", 8); /* back to the shell's screen */
+        writeLit(STDOUT_FILENO,VT_MOUSE_OFF);
+        writeLit(STDOUT_FILENO,VT_CURSOR_DEFAULT);
+        writeLit(STDOUT_FILENO,VT_ALT_SCREEN_OFF); /* back to the shell's screen */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -772,12 +810,12 @@ int enableRawMode(int fd) {
     E.rawmode = 1;
     /* Draw on the alternate screen so quitting restores the shell's screen
      * instead of leaving the file's contents behind. */
-    write(STDOUT_FILENO, "\x1b[?1049h", 8);
+    writeLit(STDOUT_FILENO,VT_ALT_SCREEN_ON);
     signal(SIGTERM, handleSigTerm);
     signal(SIGHUP, handleSigTerm);
     signal(SIGINT, handleSigTerm);
-    write(STDOUT_FILENO, "\x1b[?1002h", 8); /* enable button-event mouse reporting */
-    write(STDOUT_FILENO, "\x1b[5 q", 5);    /* blinking bar cursor */
+    writeLit(STDOUT_FILENO,VT_MOUSE_ON);
+    writeLit(STDOUT_FILENO,VT_CURSOR_BAR);
     return 0;
 
 fatal:
@@ -1002,7 +1040,7 @@ int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
     unsigned int i = 0;
 
     /* Report cursor location */
-    if (write(ofd, "\x1b[6n", 4) != 4) return -1;
+    if (writeLit(ofd,VT_QUERY_CURSOR) != LIT_LEN(VT_QUERY_CURSOR)) return -1;
 
     /* Read the response: ESC [ rows ; cols R */
     while (i < sizeof(buf)-1) {
@@ -1033,7 +1071,7 @@ int getWindowSize(int ifd, int ofd, int *rows, int *cols) {
         if (retval == -1) goto failed;
 
         /* Go to right/bottom margin and get position. */
-        if (write(ofd,"\x1b[999C\x1b[999B",12) != 12) goto failed;
+        if (writeLit(ofd,VT_CURSOR_FAR) != LIT_LEN(VT_CURSOR_FAR)) goto failed;
         retval = getCursorPosition(ifd,ofd,rows,cols);
         if (retval == -1) goto failed;
 
@@ -1906,10 +1944,11 @@ static void editorDrawGutter(struct abuf *ab, int filerow) {
         return;
     }
     int current = (filerow == E.rowoff+E.cy);
-    abAppend(ab,current ? "\x1b[1m" : "\x1b[90m",current ? 4 : 5);
+    if (current) abAppendLit(ab,VT_BOLD);
+    else abAppendLit(ab,VT_FG_GRAY);
     int len = snprintf(buf,sizeof(buf),"%*d ",E.ln_width-1,filerow+1);
     abAppend(ab,buf,len);
-    abAppend(ab,"\x1b[0m",4);
+    abAppendLit(ab,VT_RESET);
 }
 
 void editorRefreshScreen(void) {
@@ -1919,16 +1958,17 @@ void editorRefreshScreen(void) {
     struct abuf ab = ABUF_INIT;
 
     editorUpdateGeometry();
-    abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
-    abAppend(&ab,"\x1b[H",3); /* Go home. */
+    abAppendLit(&ab,VT_CURSOR_HIDE); /* Hide cursor. */
+    abAppendLit(&ab,VT_HOME); /* Go home. */
 
     /* The bracket under the cursor and its partner, if any. No cursor is
      * shown in the text while the file tree has focus. */
-    int br_row = -1, br_col = -1, bm_row = -1, bm_col = -1, br_bg = 49;
+    int br_row = -1, br_col = -1, bm_row = -1, bm_col = -1;
+    int br_bg = BG_DEFAULT;
     if (!(E.ft_open && E.ft_focus)) {
         int kind = editorFindBracketPair(&br_row,&br_col,&bm_row,&bm_col);
-        if (kind == BRACKET_MATCHED) br_bg = 100;        /* gray */
-        else if (kind == BRACKET_UNMATCHED) br_bg = 41;  /* red */
+        if (kind == BRACKET_MATCHED) br_bg = BG_BRACKET_MATCH;
+        else if (kind == BRACKET_UNMATCHED) br_bg = BG_BRACKET_UNMATCHED;
     }
 
     for (y = 0; y < E.screenrows; y++) {
@@ -1946,8 +1986,8 @@ void editorRefreshScreen(void) {
         if (E.ln_width) editorDrawGutter(&ab,filerow);
 
         if (filerow >= E.numrows) {
-            if (!E.ln_width) abAppend(&ab,"~",1);
-            abAppend(&ab,"\x1b[0K\r\n",6);
+            if (!E.ln_width) abAppendLit(&ab,"~");
+            abAppendLit(&ab,VT_CLEAR_EOL "\r\n");
             continue;
         }
 
@@ -1976,7 +2016,7 @@ void editorRefreshScreen(void) {
         int len = r->rsize - E.coloff;
         int current_color = -1;
         int in_selection = 0;
-        int cur_bg = 49; /* Background SGR in effect; 49 is the default. */
+        int cur_bg = BG_DEFAULT; /* Background SGR in effect, a BG_* value. */
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
@@ -1994,13 +2034,13 @@ void editorRefreshScreen(void) {
                     if (!in_selection && rcol >= sel_rcol_start && rcol < sel_rcol_end) {
                         if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                         run_start = j;
-                        abAppend(&ab,"\x1b[7m",4);
+                        abAppendLit(&ab,VT_REVERSE);
                         in_selection = 1;
                         current_color = -1;
                     } else if (in_selection && rcol >= sel_rcol_end) {
                         if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                         run_start = j;
-                        abAppend(&ab,"\x1b[27m",5);
+                        abAppendLit(&ab,VT_REVERSE_OFF);
                         in_selection = 0;
                         current_color = -1;
                     }
@@ -2008,14 +2048,14 @@ void editorRefreshScreen(void) {
 
                 /* Background: a selection takes precedence, then the
                  * matched or unmatched brackets, then trailing spaces. */
-                int want_bg = 49;
+                int want_bg = BG_DEFAULT;
                 if (!in_selection) {
                     if (filerow == br_row && rcol == br_col)
                         want_bg = br_bg;
                     else if (filerow == bm_row && rcol == bm_col)
                         want_bg = br_bg;
                     else if (rcol >= trail_rcol)
-                        want_bg = 41;
+                        want_bg = BG_TRAILING_SPACE;
                 }
                 if (want_bg != cur_bg) {
                     if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
@@ -2029,21 +2069,21 @@ void editorRefreshScreen(void) {
                 if (hl[j] == HL_NONPRINT) {
                     char sym;
                     if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
-                    if (!in_selection) abAppend(&ab,"\x1b[7m",4);
+                    if (!in_selection) abAppendLit(&ab,VT_REVERSE);
                     if (c[j] <= 26)
                         sym = '@'+c[j];
                     else
                         sym = '?';
                     abAppend(&ab,&sym,1);
-                    abAppend(&ab,"\x1b[0m",4);
+                    abAppendLit(&ab,VT_RESET);
                     current_color = -1;
-                    if (in_selection) abAppend(&ab,"\x1b[7m",4);
+                    if (in_selection) abAppendLit(&ab,VT_REVERSE);
                     run_start = j+1; /* 'sym' replaces c[j]; skip it in the run. */
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                         run_start = j;
-                        abAppend(&ab,"\x1b[39m",5);
+                        abAppendLit(&ab,VT_FG_DEFAULT);
                         current_color = -1;
                     }
                     /* Character joins the pending run. */
@@ -2063,24 +2103,24 @@ void editorRefreshScreen(void) {
             /* Flush the trailing run. */
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
         }
-        abAppend(&ab,"\x1b[39m",5);
+        abAppendLit(&ab,VT_FG_DEFAULT);
         /* Keep a colored background out of the EOL erase. */
-        if (cur_bg != 49) abAppend(&ab,"\x1b[49m",5);
+        if (cur_bg != BG_DEFAULT) abAppendLit(&ab,VT_BG_DEFAULT);
         /* A selected newline extends the highlight to the edge of the screen
          * (erase to EOL with a reverse-video bg); otherwise it stops at the
          * last selected character. */
-        if (sel_newline && !in_selection) abAppend(&ab,"\x1b[7m",4);
-        if (!sel_newline && in_selection) abAppend(&ab,"\x1b[27m",5);
-        abAppend(&ab,"\x1b[0K",4);
-        if (sel_newline) abAppend(&ab,"\x1b[27m",5);
-        abAppend(&ab,"\r\n",2);
+        if (sel_newline && !in_selection) abAppendLit(&ab,VT_REVERSE);
+        if (!sel_newline && in_selection) abAppendLit(&ab,VT_REVERSE_OFF);
+        abAppendLit(&ab,VT_CLEAR_EOL);
+        if (sel_newline) abAppendLit(&ab,VT_REVERSE_OFF);
+        abAppendLit(&ab,"\r\n");
     }
 
     /* Create a two rows status, spanning the gutter and text. First row: */
     int statuscols = E.ln_width + E.screencols;
     if (E.ft_open) ftBlankCell(&ab); /* continue the divider under the panes */
-    abAppend(&ab,"\x1b[0K",4);
-    abAppend(&ab,"\x1b[7m",4);
+    abAppendLit(&ab,VT_CLEAR_EOL);
+    abAppendLit(&ab,VT_REVERSE);
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
         E.filename, E.numrows, E.dirty ? "(modified)" : "");
@@ -2097,15 +2137,15 @@ void editorRefreshScreen(void) {
             abAppend(&ab,rstatus,rlen);
             break;
         } else {
-            abAppend(&ab," ",1);
+            abAppendLit(&ab," ");
             len++;
         }
     }
-    abAppend(&ab,"\x1b[0m\r\n",6);
+    abAppendLit(&ab,VT_RESET "\r\n");
 
     /* Second row depends on E.statusmsg and the status message update time. */
     if (E.ft_open) ftBlankCell(&ab);
-    abAppend(&ab,"\x1b[0K",4);
+    abAppendLit(&ab,VT_CLEAR_EOL);
     int msglen = strlen(E.statusmsg);
     if (msglen && time(NULL)-E.statusmsg_time < 5)
         abAppend(&ab,E.statusmsg,msglen <= statuscols ? msglen : statuscols);
@@ -2135,7 +2175,7 @@ void editorRefreshScreen(void) {
         snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,1+E.ft_width+E.ln_width+tx);
         abAppend(&ab,buf,strlen(buf));
     }
-    abAppend(&ab,"\x1b[?25h",6); /* Show cursor. */
+    abAppendLit(&ab,VT_CURSOR_SHOW); /* Show cursor. */
     write(STDOUT_FILENO,ab.b,ab.len);
     abFree(&ab);
 }
@@ -2835,7 +2875,7 @@ static char *editorReadClipboard(int *outlen) {
     /* Drain anything already buffered in stdin. */
     while (readByteTimeout(&ch, 0) == 1) {}
 
-    write(STDOUT_FILENO, "\x1b]52;c;?\x07", 9);
+    writeLit(STDOUT_FILENO,VT_CLIPBOARD_QUERY);
 
     /* Byte-by-byte KMP-lite search for "\x1b]52;c;" within a 500 ms window.
      * This tolerates mouse events and tmux DCS wrappers arriving before the
@@ -3228,11 +3268,11 @@ static void ftDrawSidebarRow(struct abuf *ab, int y) {
     while (n < W) line[n++] = ' ';
 
     int selected = (has && idx == E.ft_sel);
-    if (selected)               abAppend(ab, "\x1b[7m", 4);
-    else if (has && node->is_dir) abAppend(ab, "\x1b[1;34m", 7);
+    if (selected)               abAppendLit(ab,VT_REVERSE);
+    else if (has && node->is_dir) abAppendLit(ab,VT_BOLD_BLUE);
     abAppend(ab, line, W);
-    if (selected || (has && node->is_dir)) abAppend(ab, "\x1b[0m", 4);
-    abAppend(ab, "|", 1);
+    if (selected || (has && node->is_dir)) abAppendLit(ab,VT_RESET);
+    abAppendLit(ab,"|");
 }
 
 /* Move the selection by 'delta' rows, keeping it inside the visible pane. */
