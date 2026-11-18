@@ -1302,8 +1302,12 @@ static int editorHighlightRow(erow *row, int state) {
         }
 
         /* Numbers: a digit at the start of a word, then the rest of the
-         * literal (0x1F, 1_000, 3.14, 1e-5, 0x1p-3, 10UL, 42L). */
-        if ((flags & HL_HIGHLIGHT_NUMBERS) && prev_sep && isdigit(c)) {
+         * literal (0x1F, 1_000, 3.14, 1e-5, 0x1p-3, 10UL, 42L). Any char
+         * that cannot be part of a word starts one, as for keywords, so the
+         * 2 in a[1:2], {1:2} and y?1:2 is a number but the 1 in x1 is not. */
+        if ((flags & HL_HIGHLIGHT_NUMBERS) && isdigit(c) &&
+            (i == 0 || !hlIsWordChar((unsigned char)p[i-1])))
+        {
             int hex = c == '0' && i+1 < n && (p[i+1] == 'x' || p[i+1] == 'X');
             int j = i+1;
             while (j < n) {
