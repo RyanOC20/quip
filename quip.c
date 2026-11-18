@@ -3563,6 +3563,10 @@ void editorProcessKeypress(int fd) {
             E.cy = 0;
         else if (c == PAGE_DOWN && E.cy != E.screenrows-1)
             E.cy = E.screenrows-1;
+        /* Not below the line after the last one, where Down stops too: a
+         * short file does not fill the screen. */
+        if (E.rowoff+E.cy > E.numrows) E.cy = E.numrows-E.rowoff;
+        if (E.cy < 0) E.cy = 0;
         {
         int times = E.screenrows;
         while(times--)
