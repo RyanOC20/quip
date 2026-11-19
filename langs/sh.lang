@@ -5,7 +5,7 @@ quip-lang 1
 extensions    .sh .bash .zsh
 filenames     .bashrc .bash_profile .zshrc .zprofile .profile
 line_comment  #
-features      strings numbers multiline_strings
+features      strings numbers multiline_strings word_start_comments
 
 keywords
   if then else elif fi case esac for while until do done in function

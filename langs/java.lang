@@ -1,12 +1,11 @@
 quip-lang 1
 # Java.
-# Known gaps: """text blocks""" that span lines are not recognised, and
-# @annotations get no color of their own.
+# Known gap: @annotations get no color of their own.
 
 extensions    .java
 line_comment  //
 block_comment /* */
-features      strings numbers
+features      strings numbers triple_quotes
 
 keywords
   abstract assert break case catch class const continue default do else

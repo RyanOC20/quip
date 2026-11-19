@@ -103,6 +103,8 @@ A language file looks like this:
   * `multiline_strings`: strings may span lines
   * `quoted_strings`: OCaml `{id|...|id}` strings
   * `prime_quotes`: OCaml and Rust `'`, read as a char literal when one fits, else a type variable or lifetime (`'a`)
+  * `triple_quotes`: `"""..."""` and `'''...'''` strings that may span lines, such as Python docstrings and Java text blocks
+  * `word_start_comments`: `line_comment` starts a comment only at the start of a word, as `#` does in shell (`${#arr}` and `x#y` are not comments). Without it, a line comment starts anywhere outside a string.
 
 If a file has a mistake, quip skips it and names the file and line on the status bar at startup.
 

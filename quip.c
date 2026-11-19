@@ -109,14 +109,21 @@
 #define HL_PRIME_QUOTES      (1<<5) /* ' opens a char literal only when one
                                        fits; otherwise it is a type variable
                                        ('a) or an identifier prime (x'). */
+#define HL_WORD_START_COMMENTS (1<<6) /* A line comment starts only at the
+                                         start of a word, as # in shell. */
+#define HL_TRIPLE_QUOTES     (1<<7) /* """...""" and '''...''' strings, which
+                                       may span rows (Python docstrings,
+                                       Java text blocks). */
 
 /* Lexer state at the end of a row, carried into the next row. The low byte
  * is the kind; the rest is an argument: the comment nesting depth, the
- * quote char of an open string, or the hash of a quoted string's id. */
+ * quote char of an open string or triple quoted string, or the hash of a
+ * quoted string's id. */
 #define HL_ST_NORMAL  0
 #define HL_ST_COMMENT 1
 #define HL_ST_STRING  2
 #define HL_ST_QSTRING 3
+#define HL_ST_TSTRING 4
 #define HL_ST(kind,arg) ((kind) | ((arg) << 8))
 #define HL_ST_INVALID (-1) /* Never highlighted yet; differs from any state. */
 
@@ -354,6 +361,8 @@ static const struct { const char *name; int flag; } HL_FEATURES[] = {
     {"multiline_strings", HL_MULTILINE_STRINGS},
     {"quoted_strings",    HL_QUOTED_STRINGS},
     {"prime_quotes",      HL_PRIME_QUOTES},
+    {"word_start_comments", HL_WORD_START_COMMENTS},
+    {"triple_quotes",     HL_TRIPLE_QUOTES},
 };
 
 /* Problems found while loading language files, shown on the status line
@@ -1122,6 +1131,12 @@ static int hlIsWordChar(int c) {
     return isalnum(c) || c == '_' || c == '$' || c == '#' || c >= 0x80;
 }
 
+/* True for chars that end a shell word, so a # after them starts a comment:
+ * ${#arr}, x#y and a=#x are not comments, but cmd;# and (# are. */
+static int hlIsShellWordBreak(int c) {
+    return isspace(c) || (c && strchr(";&|()<>",c));
+}
+
 /* True for chars that continue an identifier, OCaml primes included. */
 static int hlIsIdentChar(int c) {
     return isalnum(c) || c == '_' || c == '\'';
@@ -1166,7 +1181,6 @@ static int editorHighlightRow(erow *row, int state) {
     int n = row->rsize;
     int kind = state & 0xff, arg = state >> 8;
     int i = 0;
-    int prev_sep = 1;    /* Does 'i' point to the start of a word? */
     int escaped_eol = 0; /* Row ends in a backslash inside a string. */
 
     while (i < n) {
@@ -1177,10 +1191,7 @@ static int editorHighlightRow(erow *row, int state) {
             if (hlAt(p,i,n,mce)) {
                 memset(hl+i,HL_MLCOMMENT,mce->len);
                 i += mce->len;
-                if (--arg == 0) {
-                    kind = HL_ST_NORMAL;
-                    prev_sep = 1;
-                }
+                if (--arg == 0) kind = HL_ST_NORMAL;
             } else if ((flags & HL_NESTED_COMMENTS) && hlAt(p,i,n,mcs)) {
                 memset(hl+i,HL_MLCOMMENT,mcs->len);
                 i += mcs->len;
@@ -1205,10 +1216,27 @@ static int editorHighlightRow(erow *row, int state) {
                 continue;
             }
             i++;
-            if (c == arg) {
-                kind = HL_ST_NORMAL;
-                prev_sep = 0;
+            if (c == arg) kind = HL_ST_NORMAL;
+            continue;
+        }
+
+        /* Inside a """ or ''' string: only three of the same quote end it,
+         * and a backslash escapes the char after it, as in Python, raw
+         * strings included. A newline never ends it. */
+        if (kind == HL_ST_TSTRING) {
+            hl[i] = HL_STRING;
+            if (c == '\\') {
+                if (i+1 < n) hl[i+1] = HL_STRING;
+                i += 2;
+                continue;
             }
+            if (c == arg && i+2 < n && p[i+1] == arg && p[i+2] == arg) {
+                memset(hl+i,HL_STRING,3);
+                i += 3;
+                kind = HL_ST_NORMAL;
+                continue;
+            }
+            i++;
             continue;
         }
 
@@ -1224,7 +1252,6 @@ static int editorHighlightRow(erow *row, int state) {
                     memset(hl+i,HL_STRING,end+1-i);
                     i = end+1;
                     kind = HL_ST_NORMAL;
-                    prev_sep = 0;
                     continue;
                 }
             }
@@ -1232,8 +1259,12 @@ static int editorHighlightRow(erow *row, int state) {
             continue;
         }
 
-        /* Single line comment: the rest of the row. */
-        if (prev_sep && hlAt(p,i,n,scs)) {
+        /* Single line comment: the rest of the row. It starts anywhere
+         * outside a string, or only at the start of a word in shell. */
+        if (hlAt(p,i,n,scs) &&
+            (!(flags & HL_WORD_START_COMMENTS) || i == 0 ||
+             hlIsShellWordBreak((unsigned char)p[i-1])))
+        {
             memset(hl+i,HL_COMMENT,n-i);
             break;
         }
@@ -1257,7 +1288,6 @@ static int editorHighlightRow(erow *row, int state) {
             if (len) {
                 memset(hl+i,HL_STRING,len);
                 i += len;
-                prev_sep = 0;
                 continue;
             }
             if (i+1 < n && (isalpha((unsigned char)p[i+1]) || p[i+1] == '_')) {
@@ -1266,7 +1296,6 @@ static int editorHighlightRow(erow *row, int state) {
                     j++;
                 memset(hl+i,HL_KEYWORD2,j-i);
                 i = j;
-                prev_sep = 0;
                 continue;
             }
         }
@@ -1274,10 +1303,18 @@ static int editorHighlightRow(erow *row, int state) {
         /* String starts. */
         if (flags & HL_HIGHLIGHT_STRINGS) {
             if (c == '"' || (c == '\'' && !(flags & HL_PRIME_QUOTES))) {
+                if ((flags & HL_TRIPLE_QUOTES) &&
+                    i+2 < n && p[i+1] == c && p[i+2] == c)
+                {
+                    memset(hl+i,HL_STRING,3);
+                    i += 3;
+                    kind = HL_ST_TSTRING;
+                    arg = c;
+                    continue;
+                }
                 hl[i++] = HL_STRING;
                 kind = HL_ST_STRING;
                 arg = c;
-                prev_sep = 0;
                 continue;
             }
             if ((flags & HL_QUOTED_STRINGS) && c == '{') {
@@ -1288,7 +1325,6 @@ static int editorHighlightRow(erow *row, int state) {
                     arg = hlQuotedIdHash(p+i+1,idlen);
                     kind = HL_ST_QSTRING;
                     i = end+1;
-                    prev_sep = 0;
                     continue;
                 }
             }
@@ -1297,13 +1333,16 @@ static int editorHighlightRow(erow *row, int state) {
         /* Non printable chars. */
         if (!isprint(c)) {
             hl[i++] = HL_NONPRINT;
-            prev_sep = 0;
             continue;
         }
 
         /* Numbers: a digit at the start of a word, then the rest of the
-         * literal (0x1F, 1_000, 3.14, 1e-5, 0x1p-3, 10UL, 42L). */
-        if ((flags & HL_HIGHLIGHT_NUMBERS) && prev_sep && isdigit(c)) {
+         * literal (0x1F, 1_000, 3.14, 1e-5, 0x1p-3, 10UL, 42L). Any char
+         * that cannot be part of a word starts one, as for keywords, so the
+         * 2 in a[1:2], {1:2} and y?1:2 is a number but the 1 in x1 is not. */
+        if ((flags & HL_HIGHLIGHT_NUMBERS) && isdigit(c) &&
+            (i == 0 || !hlIsWordChar((unsigned char)p[i-1])))
+        {
             int hex = c == '0' && i+1 < n && (p[i+1] == 'x' || p[i+1] == 'X');
             int j = i+1;
             while (j < n) {
@@ -1320,7 +1359,6 @@ static int editorHighlightRow(erow *row, int state) {
             }
             memset(hl+i,HL_NUMBER,j-i);
             i = j;
-            prev_sep = 0;
             continue;
         }
 
@@ -1343,14 +1381,10 @@ static int editorHighlightRow(erow *row, int state) {
                     break;
                 }
             }
-            if (keywords[j] != NULL) {
-                prev_sep = 0;
-                continue;
-            }
+            if (keywords[j] != NULL) continue;
         }
 
         /* Not special chars */
-        prev_sep = is_separator(c);
         i++;
     }
 
