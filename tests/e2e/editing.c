@@ -1,5 +1,6 @@
 /* Inserting, deleting, indenting and comment toggling. */
 #include <stdlib.h>
+#include <string.h>
 
 #include "../keys.h"
 #include "../pty.h"
@@ -138,5 +139,16 @@ TEST(file_without_final_newline_gains_one) {
     quip *q = qstart("a.txt", "a\nb");
     qtype(q, "x");
     check_saved(q, "a.txt", "xa\nb\n");
+    qquit(q);
+}
+
+TEST(unbound_ctrl_keys_insert_nothing) {
+    quip *q = qstart("a.txt", "x\n");
+    qkey(q, "\x07"); /* Ctrl-G */
+    qkey(q, "\x04"); /* Ctrl-D */
+    qkey(q, "\x15"); /* Ctrl-U */
+    qkey(q, "\x0b"); /* Ctrl-K */
+    CHECK_STR(qline(q, 1), "x");
+    CHECK(strstr(qstatus(q), "modified") == NULL);
     qquit(q);
 }

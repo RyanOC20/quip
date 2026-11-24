@@ -3774,8 +3774,10 @@ void editorProcessKeypress(int fd) {
         editorSelClear();
         break;
     default:
-        /* Soft key codes are not text; never insert one as a byte. */
+        /* Soft key codes are not text; never insert one as a byte. Nor
+         * an unbound Ctrl key: it would put a control byte in the file. */
         if (c >= ARROW_LEFT) break;
+        if (c >= 0 && c < 0x20 && c != TAB) break; /* UTF-8 bytes are < 0 */
         if (!undo_last_insert || E.sel_active) {
             editorPushSnapshot();
             undo_last_insert = 1;
