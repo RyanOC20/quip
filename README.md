@@ -108,5 +108,18 @@ A language file looks like this:
 
 If a file has a mistake, quip skips it and names the file and line on the status bar at startup.
 
+Testing
+---
+
+The tests are C and POSIX only, like quip. They drive the real binary through a pseudo terminal and check what it draws, cell by cell, using a small terminal model (`tests/screen.c`) that fails on any escape sequence it does not know.
+
+| Command | What it does |
+|---|---|
+| `make test` | End-to-end tests (`tests/e2e/`). Pick tests with `T`, as in `make test T=undo` |
+| `make test-asan` | The same tests against a build with AddressSanitizer and UndefinedBehaviorSanitizer |
+| `make fuzz` | Random editing sessions against the sanitizer build. Each failure is shrunk to the fewest keys and printed as a test to paste into `tests/e2e/`. Options go in `FUZZ`, as in `make fuzz FUZZ="-n 2000 -s 5000"` |
+| `make differential` | Replays random sessions against quip built from git ref `REF` (default `HEAD`) and the working tree, and fails on any difference in output or saved files. Refactoring must pass it |
+| `make bench` | Times loading, scrolling, typing and highlighting on large files, plus memory and binary size. `make bench BENCH_REF=master` compares against a git ref and fails on a slowdown |
+
 Kilo was written by Salvatore Sanfilippo aka antirez and is released
 under the BSD 2 clause license.
