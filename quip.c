@@ -2393,14 +2393,10 @@ void editorMoveCursor(int key) {
             if (E.coloff) {
                 E.coloff--;
             } else {
-                if (filerow > 0) {
-                    E.cy--;
-                    E.cx = E.row[filerow-1].size;
-                    if (E.cx > E.screencols-1) {
-                        E.coloff = E.cx-E.screencols+1;
-                        E.cx = E.screencols-1;
-                    }
-                }
+                /* To the end of the previous line, scrolling up when the
+                 * cursor is on the top screen row. */
+                if (filerow > 0)
+                    editorSetCursorPos(filerow-1, E.row[filerow-1].size);
             }
         } else {
             E.cx -= 1;
