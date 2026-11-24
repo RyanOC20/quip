@@ -33,8 +33,8 @@ static char *big_c(int lines) {
     size_t cap = (size_t)lines * 64 + 64, o = 0;
     char *buf = malloc(cap);
     for (int i = 0; i < lines; i++) {
-        o += snprintf(buf + o, cap - o,
-                      "int f%d(int x) { return x * %d; } // note %d\n", i, i % 97, i);
+        o += snprintf(buf + o, cap - o, "int f%d(int x) { return x * %d; } // note %d\n", i, i % 97,
+                      i);
     }
     return buf;
 }
@@ -42,7 +42,7 @@ static char *big_c(int lines) {
 typedef struct metric {
     const char *name, *unit;
     int lower_is_better;
-    double floor;   /* Differences below this are noise. */
+    double floor; /* Differences below this are noise. */
 } metric;
 
 enum { M_LOAD, M_SCROLL, M_TYPE, M_CASCADE, M_BRACKET, M_RSS, M_SIZE, NMETRICS };
@@ -154,8 +154,7 @@ static int measure(const char *bin, const char *dir, double *v) {
     close(p[0]);
     int st;
     waitpid(pid, &st, 0);
-    if (n != (ssize_t)(sizeof(double) * NMETRICS) || !WIFEXITED(st) ||
-        WEXITSTATUS(st) != 0) {
+    if (n != (ssize_t)(sizeof(double) * NMETRICS) || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
         fprintf(stderr, "benchmark run of %s failed\n", bin);
         return -1;
     }
@@ -178,10 +177,14 @@ int main(int argc, char **argv) {
     int nbins = 0, runs = 7;
     double pct = 10, size_pct = 15;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-r") && i + 1 < argc) runs = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-p") && i + 1 < argc) pct = atof(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) size_pct = atof(argv[++i]);
-        else if (nbins < 2) bins[nbins++] = argv[i];
+        if (!strcmp(argv[i], "-r") && i + 1 < argc)
+            runs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc)
+            pct = atof(argv[++i]);
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc)
+            size_pct = atof(argv[++i]);
+        else if (nbins < 2)
+            bins[nbins++] = argv[i];
     }
     if (nbins == 0 || runs < 1) {
         fprintf(stderr, "usage: %s BIN | OLD NEW [-r runs] [-p percent] [-s size_percent]\n",
@@ -236,8 +239,7 @@ int main(int argc, char **argv) {
     double *col = malloc(sizeof(double) * runs);
     for (int b = 0; b < nbins; b++) {
         for (int m = 0; m < NMETRICS; m++) {
-            for (int r = 0; r < runs; r++)
-                col[r] = vals[((size_t)b * runs + r) * NMETRICS + m];
+            for (int r = 0; r < runs; r++) col[r] = vals[((size_t)b * runs + r) * NMETRICS + m];
             med[b][m] = median(col, runs);
         }
     }
@@ -255,8 +257,8 @@ int main(int argc, char **argv) {
             double limit = m == M_SIZE ? size_pct : pct;
             int bad = change > limit && (b - a) > metrics[m].floor;
             worse |= bad;
-            printf("%-36s %12.2f %12.2f %+7.1f%% %s%s\n", metrics[m].name, a, b,
-                   change, metrics[m].unit, bad ? "  <-- regression" : "");
+            printf("%-36s %12.2f %12.2f %+7.1f%% %s%s\n", metrics[m].name, a, b, change,
+                   metrics[m].unit, bad ? "  <-- regression" : "");
         }
     }
     return worse ? 1 : 0;

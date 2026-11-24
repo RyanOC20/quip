@@ -1,7 +1,7 @@
 /* Command line handling and terminal setup and teardown. */
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/wait.h>
 
 #include "../keys.h"
@@ -59,9 +59,8 @@ TEST(language_files_found_next_to_binary) {
 
 TEST(user_language_file_overrides_shipped) {
     /* A user python.lang where "pass" is the only keyword. */
-    const char *const files[] = {
-        ".config/quip/langs/python.lang",
-        "quip-lang 1\nextensions .py\nkeywords pass\n", NULL};
+    const char *const files[] = {".config/quip/langs/python.lang",
+                                 "quip-lang 1\nextensions .py\nkeywords pass\n", NULL};
     qopts o = {.files = files};
     quip *q = qstart_opts("a.py", "def pass\n", &o);
     CHECK_INT(qcell(q, 1, 5)->fg, 0);
@@ -70,9 +69,8 @@ TEST(user_language_file_overrides_shipped) {
 }
 
 TEST(bad_language_file_is_reported) {
-    const char *const files[] = {
-        ".config/quip/langs/bad.lang", "quip-lang 1\nextensions .zz\nbogus x\n",
-        NULL};
+    const char *const files[] = {".config/quip/langs/bad.lang",
+                                 "quip-lang 1\nextensions .zz\nbogus x\n", NULL};
     qopts o = {.files = files};
     quip *q = qstart_opts("a.txt", "x\n", &o);
     CHECK(strstr(qmessage(q), "bad.lang") != NULL);

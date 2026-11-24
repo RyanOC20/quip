@@ -12,29 +12,29 @@
 #include "screen.h"
 
 typedef struct qopts {
-    int rows, cols;        /* Terminal size; 24x80 when 0. */
-    int no_winsize;        /* Report a 0x0 window, as a broken terminal does. */
-    const char *const *argv; /* Arguments after the program name; NULL means
-                                just the file name given to qstart. */
-    const char *bin;       /* Binary to run; NULL means $QUIP_BIN. */
-    int no_wait;           /* Don't wait for the first frame. */
+    int rows, cols;           /* Terminal size; 24x80 when 0. */
+    int no_winsize;           /* Report a 0x0 window, as a broken terminal does. */
+    const char *const *argv;  /* Arguments after the program name; NULL means
+                                 just the file name given to qstart. */
+    const char *bin;          /* Binary to run; NULL means $QUIP_BIN. */
+    int no_wait;              /* Don't wait for the first frame. */
     const char *const *files; /* Extra files to create first: name, content,
                                  name, content, ..., NULL. */
-    int lenient;           /* Don't fail on output the screen model doesn't
-                              know (differential runs compare raw bytes). */
+    int lenient;              /* Don't fail on output the screen model doesn't
+                                 know (differential runs compare raw bytes). */
 } qopts;
 
 typedef struct quip {
     pid_t pid;
-    int fd;                /* PTY master. */
+    int fd; /* PTY master. */
     screen scr;
-    char dir[1024];        /* The session's working directory. */
-    char *raw;             /* Everything quip wrote, for differential tests. */
+    char dir[1024]; /* The session's working directory. */
+    char *raw;      /* Everything quip wrote, for differential tests. */
     size_t rawlen, rawcap;
     int exited, status;
     int timeout_ms;
     int lenient;
-    long maxrss_kb;        /* Peak memory of quip, once it has exited. */
+    long maxrss_kb; /* Peak memory of quip, once it has exited. */
 } quip;
 
 /* Start quip in a new directory under test_dir, editing 'file' there. When

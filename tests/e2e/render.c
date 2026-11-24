@@ -23,7 +23,10 @@ TEST(gutter_marks_current_line) {
 
 TEST(gutter_widens_with_line_count) {
     char *text = malloc(1000 * 2 + 1);
-    for (int i = 0; i < 1000; i++) { text[2 * i] = 'x'; text[2 * i + 1] = '\n'; }
+    for (int i = 0; i < 1000; i++) {
+        text[2 * i] = 'x';
+        text[2 * i + 1] = '\n';
+    }
     text[2000] = '\0';
     quip *q = qstart("a.txt", text);
     free(text);

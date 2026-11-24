@@ -53,33 +53,39 @@ static void print_quoted(const char *s, int len) {
     fputc('"', stdout);
     for (int i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[i];
-        if (c == '\n') fputs("\\n", stdout);
-        else if (c == '\r') fputs("\\r", stdout);
-        else if (c == '\t') fputs("\\t", stdout);
-        else if (c == '"' || c == '\\') printf("\\%c", c);
-        else if (c < 0x20 || c == 0x7f) printf("\\x%02x", c);
-        else fputc(c, stdout);
+        if (c == '\n')
+            fputs("\\n", stdout);
+        else if (c == '\r')
+            fputs("\\r", stdout);
+        else if (c == '\t')
+            fputs("\\t", stdout);
+        else if (c == '"' || c == '\\')
+            printf("\\%c", c);
+        else if (c < 0x20 || c == 0x7f)
+            printf("\\x%02x", c);
+        else
+            fputc(c, stdout);
     }
     fputc('"', stdout);
 }
 
-void test_check_mem(const char *file, int line, const char *expr,
-                    const char *got, int gotlen, const char *want,
-                    int wantlen) {
+void test_check_mem(const char *file, int line, const char *expr, const char *got, int gotlen,
+                    const char *want, int wantlen) {
     if (got && gotlen == wantlen && memcmp(got, want, wantlen) == 0) return;
     printf("%s:%d: %s\n  got:  ", file, line, expr);
-    if (got) print_quoted(got, gotlen);
-    else fputs("NULL", stdout);
+    if (got)
+        print_quoted(got, gotlen);
+    else
+        fputs("NULL", stdout);
     fputs("\n  want: ", stdout);
     print_quoted(want, wantlen);
     fputc('\n', stdout);
     test_fail(file, line, "%s differs", expr);
 }
 
-void test_check_str(const char *file, int line, const char *expr,
-                    const char *got, const char *want) {
-    test_check_mem(file, line, expr, got, got ? (int)strlen(got) : 0, want,
-                   (int)strlen(want));
+void test_check_str(const char *file, int line, const char *expr, const char *got,
+                    const char *want) {
+    test_check_mem(file, line, expr, got, got ? (int)strlen(got) : 0, want, (int)strlen(want));
 }
 
 void test_remove_tree(const char *path) {

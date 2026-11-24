@@ -8,13 +8,14 @@
 #include "../pty.h"
 #include "../test.h"
 
-static int rev(quip *q, int row, int col) {
-    return (qcell(q, row, col)->attr & ATTR_REVERSE) != 0;
-}
+static int rev(quip *q, int row, int col) { return (qcell(q, row, col)->attr & ATTR_REVERSE) != 0; }
 
 TEST(control_characters_show_in_caret_notation) {
     /* Ctrl-A shows as a reverse 'A', ESC as '[', DEL as '?'. */
-    quip *q = qstart("a.txt", "a\x01" "b\x1b" "c\x7f" "d\n");
+    quip *q = qstart("a.txt", "a\x01"
+                              "b\x1b"
+                              "c\x7f"
+                              "d\n");
     CHECK_STR(qline(q, 1), "aAb[c?d");
     CHECK(!rev(q, 1, 5));
     CHECK(rev(q, 1, 6));
@@ -28,7 +29,8 @@ TEST(control_characters_show_in_caret_notation) {
 TEST(control_characters_in_strings_and_comments) {
     /* Inside a string or comment the lexer colors the bytes, but they are
      * still drawn as caret letters. */
-    quip *q = qstart("a.c", "char *s = \"\x1b[2J\"; // \x07\n/* \x1b" "c */\n");
+    quip *q = qstart("a.c", "char *s = \"\x1b[2J\"; // \x07\n/* \x1b"
+                            "c */\n");
     CHECK_STR(qline(q, 1), "char *s = \"[[2J\"; // G");
     CHECK_STR(qline(q, 2), "/* [c */");
     CHECK(rev(q, 1, 16));
@@ -44,7 +46,8 @@ TEST(osc52_in_file_does_not_set_clipboard) {
 
 TEST(c1_controls_are_not_sent) {
     /* U+009B is CSI in terminals that honor C1 controls. */
-    quip *q = qstart("a.txt", "x\xc2\x9b" "2Jy\n");
+    quip *q = qstart("a.txt", "x\xc2\x9b"
+                              "2Jy\n");
     CHECK_STR(qline(q, 1), "x??2Jy");
     CHECK(rev(q, 1, 6) && rev(q, 1, 7));
     qquit(q);

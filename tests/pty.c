@@ -128,17 +128,13 @@ static void set_env(const char *dir) {
     unsetenv("QUIP_LANGDIR");
     setenv("TERM", "xterm-256color", 1);
     /* Sanitizer reports go to files, not the terminal, and fail the test. */
-    snprintf(buf, sizeof(buf),
-             "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
+    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
     setenv("ASAN_OPTIONS", buf, 1);
-    snprintf(buf, sizeof(buf),
-             "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
+    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
     setenv("UBSAN_OPTIONS", buf, 1);
 }
 
-quip *qstart(const char *file, const char *content) {
-    return qstart_opts(file, content, NULL);
-}
+quip *qstart(const char *file, const char *content) { return qstart_opts(file, content, NULL); }
 
 quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     qopts def = {0};
@@ -253,7 +249,7 @@ static void reap(quip *q, int block) {
 #ifdef __APPLE__
         q->maxrss_kb = ru.ru_maxrss / 1024; /* bytes on macOS */
 #else
-        q->maxrss_kb = ru.ru_maxrss;        /* kilobytes on Linux */
+        q->maxrss_kb = ru.ru_maxrss; /* kilobytes on Linux */
 #endif
     }
 }
@@ -290,8 +286,8 @@ void qwait_frames(quip *q, long frames) {
     long deadline = now_ms() + q->timeout_ms;
     while (q->scr.frames < frames) {
         if (now_ms() > deadline)
-            test_fail(__FILE__, __LINE__, "timed out waiting for frame %ld (have %ld)",
-                      frames, q->scr.frames);
+            test_fail(__FILE__, __LINE__, "timed out waiting for frame %ld (have %ld)", frames,
+                      q->scr.frames);
         if (!pump_once(q, 20)) check_alive(q);
         check_alive(q);
     }
@@ -305,9 +301,7 @@ void qsend(quip *q, const char *bytes, int len, int frames) {
     qwait_frames(q, target);
 }
 
-void qkey(quip *q, const char *seq) {
-    qsend(q, seq, (int)strlen(seq), 1);
-}
+void qkey(quip *q, const char *seq) { qsend(q, seq, (int)strlen(seq), 1); }
 
 void qtype(quip *q, const char *text) {
     int n = (int)strlen(text);
@@ -318,8 +312,7 @@ void qtype(quip *q, const char *text) {
 }
 
 static void mouse(quip *q, int button, int row, int col) {
-    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col),
-                   (char)(32 + row)};
+    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col), (char)(32 + row)};
     qsend(q, seq, 6, 1);
 }
 
@@ -350,9 +343,7 @@ const char *qrow(quip *q, int row) {
     return screen_row_text(&q->scr, row - 1, buf, sizeof(buf));
 }
 
-const cell *qcell(quip *q, int row, int col) {
-    return screen_cell(&q->scr, row - 1, col - 1);
-}
+const cell *qcell(quip *q, int row, int col) { return screen_cell(&q->scr, row - 1, col - 1); }
 
 const char *qline(quip *q, int row) {
     static char buf[4096];
@@ -424,8 +415,7 @@ char *qstop(quip *q, int quit) {
     char *rep = sanitizer_report(q);
     if (rep) {
         size_t l = strlen(msg);
-        snprintf(msg + l, sizeof(msg) - l, "%ssanitizer report:\n%.1500s",
-                 l ? "\n" : "", rep);
+        snprintf(msg + l, sizeof(msg) - l, "%ssanitizer report:\n%.1500s", l ? "\n" : "", rep);
         free(rep);
     }
     return msg[0] ? strdup(msg) : NULL;

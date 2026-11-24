@@ -21,19 +21,20 @@ static uint32_t rnd(void) {
 
 /* Tokens that move the lexer between states, plus plain text and motion. */
 static const char *const tokens[] = {
-    "/*", "*/", "(*", "*)", "\"", "'", "\"\"\"", "'''", "\\", "#", "//",
-    "{a|", "|a}", "1", "0x1F", "3.14", "if", "int", "return", "def", "let",
-    " ", " ", "x", "y_", "(", ")", "$", "`",
-    K_ENTER, K_ENTER, K_BACKSPACE, K_BACKSPACE, K_DEL,
-    K_LEFT, K_RIGHT, K_UP, K_DOWN, K_HOME, K_END,
+    "/*",    "*/",        "(*",        "*)",  "\"",   "'",     "\"\"\"", "'''",  "\\",     "#",
+    "//",    "{a|",       "|a}",       "1",   "0x1F", "3.14",  "if",     "int",  "return", "def",
+    "let",   " ",         " ",         "x",   "y_",   "(",     ")",      "$",    "`",      K_ENTER,
+    K_ENTER, K_BACKSPACE, K_BACKSPACE, K_DEL, K_LEFT, K_RIGHT, K_UP,     K_DOWN, K_HOME,   K_END,
 };
 
 static void edit_randomly(quip *q, int steps) {
     int n = (int)(sizeof(tokens) / sizeof(tokens[0]));
     for (int i = 0; i < steps; i++) {
         const char *t = tokens[rnd() % n];
-        if (t[0] == '\x1b' || t[0] == '\r' || t[0] == '\x7f') qkey(q, t);
-        else qtype(q, t);
+        if (t[0] == '\x1b' || t[0] == '\r' || t[0] == '\x7f')
+            qkey(q, t);
+        else
+            qtype(q, t);
     }
 }
 
@@ -49,8 +50,8 @@ static void compare_with_fresh(quip *q, const char *file, uint32_t seed) {
             if (a->cp == ' ' && b->cp == ' ') continue;
             if (a->cp != b->cp || a->fg != b->fg) {
                 printf("seed %u: file after the edits:\n%s\n", seed, text);
-                printf("row %d col %d: incremental '%c' fg%d, fresh '%c' fg%d\n",
-                       row, col, (int)a->cp, a->fg, (int)b->cp, b->fg);
+                printf("row %d col %d: incremental '%c' fg%d, fresh '%c' fg%d\n", row, col,
+                       (int)a->cp, a->fg, (int)b->cp, b->fg);
                 test_fail(__FILE__, __LINE__, "highlight differs from a fresh open");
             }
         }
@@ -59,8 +60,7 @@ static void compare_with_fresh(quip *q, const char *file, uint32_t seed) {
     qquit(f);
 }
 
-static void run(const char *file, const char *start, uint32_t first_seed,
-                int seeds) {
+static void run(const char *file, const char *start, uint32_t first_seed, int seeds) {
     for (uint32_t seed = first_seed; seed < first_seed + seeds; seed++) {
         rng_state = seed * 2654435761u + 1;
         quip *q = qstart(file, start);
