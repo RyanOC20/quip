@@ -1866,6 +1866,12 @@ static int editorSelBounds(int *sr, int *sc, int *er, int *ec) {
     }
     if (*er >= E.numrows) { *er = E.numrows - 1; *ec = E.row[*er].size; }
     if (*sr > *er)        { *sr = *er; *sc = *ec; }
+    /* An end can lie past the end of its line (a click beyond the last
+     * column, a cursor parked by sideways scrolling): clamp it, so callers
+     * only ever see real positions. */
+    if (*sc > E.row[*sr].size) *sc = E.row[*sr].size;
+    if (*ec > E.row[*er].size) *ec = E.row[*er].size;
+    if (*sr == *er && *sc > *ec) *sc = *ec;
     return !(*sr == *er && *sc == *ec);
 }
 
