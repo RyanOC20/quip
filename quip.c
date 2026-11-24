@@ -1330,8 +1330,8 @@ static int editorHighlightRow(erow *row, int state) {
             }
         }
 
-        /* Non printable chars. */
-        if (!isprint(c)) {
+        /* Control characters. Bytes >= 0x80 are UTF-8 text. */
+        if (c < 0x20 || c == 0x7f) {
             hl[i++] = HL_NONPRINT;
             continue;
         }
@@ -1766,6 +1766,29 @@ writeerr:
 
 /* ============================= Terminal update ============================ */
 
+/* Bytes that a terminal would obey instead of print: a C0 control or DEL
+ * (1 byte), or a C1 control U+0080-U+009F written in UTF-8 (2 bytes).
+ * Returns how many bytes at s[i] form one, or 0. Text from files, file names
+ * and messages must never reach the terminal with these intact. */
+static int editorCtrlLen(const char *s, int i, int n) {
+    unsigned char b = (unsigned char)s[i];
+    if (b < 0x20 || b == 0x7f) return 1;
+    if (b == 0xc2 && i+1 < n &&
+        (unsigned char)s[i+1] >= 0x80 && (unsigned char)s[i+1] <= 0x9f)
+        return 2;
+    return 0;
+}
+
+/* Replace control characters in 's' with '?', one per byte. */
+static void editorSanitize(char *s, int n) {
+    int i = 0;
+    while (i < n) {
+        int k = editorCtrlLen(s,i,n);
+        if (k == 0) { i++; continue; }
+        while (k--) s[i++] = '?';
+    }
+}
+
 /* We define a very simple "append buffer" structure, that is an heap
  * allocated string where we can append to. This is useful in order to
  * write all the escape sequences in a buffer and flush them to the standard
@@ -2100,19 +2123,24 @@ void editorRefreshScreen(void) {
                     cur_bg = want_bg;
                 }
 
-                if (hl[j] == HL_NONPRINT) {
-                    char sym;
+                int ctrl = editorCtrlLen(c,j,len);
+                if (ctrl) {
+                    /* A control character is never sent as is, whatever the
+                     * lexer made of it: draw it reversed in caret notation,
+                     * ^A as 'A' and ESC as '[', and DEL or a C1 control as
+                     * '?', one cell per byte. */
+                    unsigned char b = (unsigned char)c[j];
+                    char sym[2] = {'?','?'};
+                    if (b < 0x20) sym[0] = '@'+b;
                     if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                     if (!in_selection) abAppendLit(&ab,VT_REVERSE);
-                    if (c[j] <= 26)
-                        sym = '@'+c[j];
-                    else
-                        sym = '?';
-                    abAppend(&ab,&sym,1);
+                    abAppend(&ab,sym,ctrl);
                     abAppendLit(&ab,VT_RESET);
                     current_color = -1;
+                    cur_bg = BG_DEFAULT; /* VT_RESET cleared it too. */
                     if (in_selection) abAppendLit(&ab,VT_REVERSE);
-                    run_start = j+1; /* 'sym' replaces c[j]; skip it in the run. */
+                    j += ctrl-1;
+                    run_start = j+1; /* 'sym' replaces the bytes. */
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
@@ -2165,6 +2193,7 @@ void editorRefreshScreen(void) {
         snprintf(rstatus, sizeof(rstatus), "%d:%d",
             editorCursorCharCol(),E.rowoff+E.cy+1);
     if (len > statuscols) len = statuscols;
+    editorSanitize(status,len); /* The file name may hold anything. */
     abAppend(&ab,status,len);
     while(len < statuscols) {
         if (statuscols - len == rlen) {
@@ -2221,6 +2250,8 @@ void editorSetStatusMessage(const char *fmt, ...) {
     va_start(ap,fmt);
     vsnprintf(E.statusmsg,sizeof(E.statusmsg),fmt,ap);
     va_end(ap);
+    /* Messages quote paths and file names, which may hold anything. */
+    editorSanitize(E.statusmsg,(int)strlen(E.statusmsg));
     E.statusmsg_time = time(NULL);
 }
 
@@ -3300,6 +3331,7 @@ static void ftDrawSidebarRow(struct abuf *ab, int y) {
         if (*p && W > 0) line[W-1] = '~'; /* name was truncated */
     }
     while (n < W) line[n++] = ' ';
+    editorSanitize(line,W); /* File names may hold anything. */
 
     int selected = (has && idx == E.ft_sel);
     if (selected)               abAppendLit(ab,VT_REVERSE);
