@@ -104,3 +104,22 @@ TEST(tree_refuses_narrow_terminal) {
     CHECK_STR(qmessage(q), "Terminal too narrow for the file tree");
     qquit(q);
 }
+
+TEST(tree_click_selects_and_opens) {
+    quip *q = start_project();
+    qkey(q, K_CTRL_E);
+    qclick(q, 3, 8); /* alpha.txt */
+    CHECK(strstr(qrow(q, 1), "|  1 alpha") != NULL);
+    qquit(q);
+}
+
+TEST(tree_focused_click_in_text_focuses_editor) {
+    quip *q = start_project();
+    qkey(q, K_CTRL_E);
+    qclick(q, 1, 40); /* text column 6 of line 1 */
+    CHECK_INT(q->scr.y, 0);
+    CHECK_INT(q->scr.x, 39);
+    qtype(q, "X");
+    CHECK(strstr(qrow(q, 1), "|  1 int mXain;") != NULL);
+    qquit(q);
+}

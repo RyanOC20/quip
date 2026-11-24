@@ -3502,7 +3502,10 @@ void editorProcessKeypress(int fd) {
      * closes it and Ctrl-Q still quits; everything else is consumed. */
     if (E.ft_open && E.ft_focus) {
         if (c == CTRL_E) { ftToggle(); return; }
-        if (c != CTRL_Q && c != SCROLL_LEFT && c != SCROLL_RIGHT) {
+        /* Mouse buttons go to the main handler, which knows whether the
+         * press landed in the sidebar or the text. */
+        if (c != CTRL_Q && c != SCROLL_LEFT && c != SCROLL_RIGHT &&
+            c != MOUSE_CLICK && c != MOUSE_DRAG && c != MOUSE_RELEASE) {
             ftHandleKey(c);
             return;
         }
