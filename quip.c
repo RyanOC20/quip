@@ -60,7 +60,24 @@
  * would silently give sizeof(char *). */
 #define LIT_LEN(s)         ((int)sizeof("" s "") - 1)
 #define abAppendLit(ab, s) abAppend(ab, "" s "", LIT_LEN(s))
-#define writeLit(fd, s)    write(fd, "" s "", LIT_LEN(s))
+#define writeLit(fd, s)    writeAll(fd, "" s "", LIT_LEN(s))
+
+/* Write all of buf: write() may write only part of it, or be interrupted
+ * by a signal before writing anything. Returns 0, or -1 on error. Safe to
+ * call from a signal handler. */
+static int writeAll(int fd, const void *buf, size_t len) {
+    const char *p = buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n == -1) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
 
 #define VT_HOME            "\x1b[H"
 #define VT_CLEAR_EOL       "\x1b[0K" /* Erase to the end of the line. */
@@ -1069,7 +1086,7 @@ int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
     unsigned int i = 0;
 
     /* Report cursor location */
-    if (writeLit(ofd, VT_QUERY_CURSOR) != LIT_LEN(VT_QUERY_CURSOR)) return -1;
+    if (writeLit(ofd, VT_QUERY_CURSOR) == -1) return -1;
 
     /* Read the response: ESC [ rows ; cols R */
     while (i < sizeof(buf) - 1) {
@@ -1100,14 +1117,14 @@ int getWindowSize(int ifd, int ofd, int *rows, int *cols) {
         if (retval == -1) goto failed;
 
         /* Go to right/bottom margin and get position. */
-        if (writeLit(ofd, VT_CURSOR_FAR) != LIT_LEN(VT_CURSOR_FAR)) goto failed;
+        if (writeLit(ofd, VT_CURSOR_FAR) == -1) goto failed;
         retval = getCursorPosition(ifd, ofd, rows, cols);
         if (retval == -1) goto failed;
 
         /* Restore position. */
         char seq[32];
         snprintf(seq, 32, "\x1b[%d;%dH", orig_row, orig_col);
-        if (write(ofd, seq, strlen(seq)) == -1) {
+        if (writeAll(ofd, seq, strlen(seq)) == -1) {
             /* Can't recover... */
         }
         return 0;
@@ -1747,10 +1764,10 @@ int editorSave(void) {
     int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
     if (fd == -1) goto writeerr;
 
-    /* Use truncate + a single write(2) call in order to make saving
+    /* Set the final size first, then write the whole buffer, to make saving
      * a bit safer, under the limits of what we can do in a small editor. */
     if (ftruncate(fd, len) == -1) goto writeerr;
-    if (write(fd, buf, len) != len) goto writeerr;
+    if (writeAll(fd, buf, len) == -1) goto writeerr;
 
     close(fd);
     free(buf);
@@ -2278,7 +2295,7 @@ void editorRefreshScreen(void) {
         abAppend(&ab, buf, strlen(buf));
     }
     abAppendLit(&ab, VT_CURSOR_SHOW); /* Show cursor. */
-    write(STDOUT_FILENO, ab.b, ab.len);
+    writeAll(STDOUT_FILENO, ab.b, ab.len);
     abFree(&ab);
 }
 
@@ -2976,7 +2993,7 @@ static void editorCopySelection(void) {
     int seqlen = 8 + (int)strlen(b64); /* ESC ] 52 ; c ; <b64> BEL */
     char *seq = malloc(seqlen + 1);
     snprintf(seq, seqlen + 1, "\x1b]52;c;%s\x07", b64);
-    write(STDOUT_FILENO, seq, seqlen);
+    writeAll(STDOUT_FILENO, seq, seqlen);
     free(seq);
     free(b64);
 }
