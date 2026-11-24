@@ -1144,9 +1144,10 @@ int is_separator(int c) { return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[
 
 /* Ensure 'buf' can hold at least 'need' bytes, growing its capacity
  * geometrically. '*cap' tracks the current capacity and is updated in place.
- * Never shrinks; returns the (possibly reallocated) buffer. */
+ * Never shrinks; returns the (possibly reallocated) buffer. Never returns NULL
+ * for a need of 0 either, so callers may memset or memcpy into it. */
 static void *growBuf(void *buf, int *cap, int need) {
-    if (need <= *cap) return buf;
+    if (buf && need <= *cap) return buf;
     int nc = *cap ? *cap : 8;
     while (nc < need) nc *= 2;
     *cap = nc;
@@ -3104,22 +3105,31 @@ static void editorPaste(void) {
 
 /* ========================= Undo / Redo helpers ============================ */
 
+/* A copy of the 'len' bytes at s + off, or NULL when len is 0 (s itself may
+ * then be NULL, and pointer arithmetic on NULL is undefined). */
+static char *memdup(const char *s, int off, int len) {
+    if (len == 0) return NULL;
+    char *d = malloc(len);
+    memcpy(d, s + off, len);
+    return d;
+}
+
 /* Produce src with bytes [pos, pos+rmlen) replaced by 'ins' (inslen bytes).
  * Returns a freshly allocated, NUL-terminated buffer; *outlen excludes NUL. */
 static char *editorSplice(const char *src, int srclen, int pos, int rmlen, const char *ins,
                           int inslen, int *outlen) {
     int nl = srclen - rmlen + inslen;
     char *out = malloc(nl + 1);
-    memcpy(out, src, pos);
-    memcpy(out + pos, ins, inslen);
-    memcpy(out + pos + inslen, src + pos + rmlen, srclen - pos - rmlen);
+    /* Either side may be NULL when empty, and memcpy from NULL is undefined
+     * even for zero bytes. */
+    if (pos) memcpy(out, src, pos);
+    if (inslen) memcpy(out + pos, ins, inslen);
+    if (srclen - pos - rmlen) memcpy(out + pos + inslen, src + pos + rmlen, srclen - pos - rmlen);
     out[nl] = '\0';
     *outlen = nl;
     return out;
 }
 
-/* Tear down the current rows and rebuild them from serialized 'text' (rows
- * separated by '\n'). Cursor/dirty state is set by the caller. */
 /* Free every row buffer and reset the row array to empty. */
 static void editorFreeAllRows(void) {
     for (int i = 0; i < E.numrows; i++) {
@@ -3133,6 +3143,8 @@ static void editorFreeAllRows(void) {
     E.rowcap = 0;
 }
 
+/* Tear down the current rows and rebuild them from serialized 'text' (rows
+ * separated by '\n'). Cursor/dirty state is set by the caller. */
 static void editorRebuildRows(char *text, int len) {
     editorFreeAllRows();
 
@@ -3205,10 +3217,8 @@ void editorPushSnapshot(void) {
     e->pos = p;
     e->oldlen = undo_base_len - s - p;
     e->newlen = curlen - s - p;
-    e->old = malloc(e->oldlen);
-    memcpy(e->old, undo_base + p, e->oldlen);
-    e->new = malloc(e->newlen);
-    memcpy(e->new, cur + p, e->newlen);
+    e->old = memdup(undo_base, p, e->oldlen);
+    e->new = memdup(cur, p, e->newlen);
     e->cx = E.cx;
     e->cy = E.cy;
     e->rowoff = E.rowoff;
