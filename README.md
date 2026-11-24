@@ -1,14 +1,18 @@
 Quip
 ===
 
+[![CI](https://github.com/RyanOC20/quip/actions/workflows/ci.yml/badge.svg)](https://github.com/RyanOC20/quip/actions/workflows/ci.yml)
+
 Quip is a lightweight fork of the Kilo editor that maintains no reliance on libraries, but adds additional modern features.
 
 Build & Install
 ---
 
-Build:
+Build (needs only a C99 compiler and a POSIX system):
 
     make
+
+The usual variables apply, as in `make CC=gcc CFLAGS=-O2`. `make debug` builds `quip-debug` for a debugger, and `make asan` builds `quip-asan` with AddressSanitizer and UndefinedBehaviorSanitizer. `make install` strips the installed binary; `make install INSTALL_STRIP=` keeps its symbols.
 
 Install for the current user (to `~/.local/bin`):
 
@@ -120,6 +124,9 @@ The tests are C and POSIX only, like quip. They drive the real binary through a 
 | `make fuzz` | Random editing sessions against the sanitizer build. Each failure is shrunk to the fewest keys and printed as a test to paste into `tests/e2e/`. Options go in `FUZZ`, as in `make fuzz FUZZ="-n 2000 -s 5000"` |
 | `make differential` | Replays random sessions against quip built from git ref `REF` (default `HEAD`) and the working tree, and fails on any difference in output or saved files. Refactoring must pass it |
 | `make bench` | Times loading, scrolling, typing and highlighting on large files, plus memory and binary size. `make bench BENCH_REF=master` compares against a git ref and fails on a slowdown |
+| `make format` | Formats the C sources with clang-format (`.clang-format`). `make check-format` only checks |
+
+CI runs the tests, the sanitizer tests and a short fuzz run on Linux and macOS with gcc and clang, with warnings as errors. It also benchmarks each change against its base and against quip before the 2026 rework, and checks the formatting.
 
 Kilo was written by Salvatore Sanfilippo aka antirez and is released
 under the BSD 2 clause license.
