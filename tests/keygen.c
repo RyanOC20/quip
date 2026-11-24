@@ -169,5 +169,6 @@ void kcase_print_test(const kcase *c, const char *name) {
         print_c_string(k);
         fputs(");\n", stdout);
     }
+    printf("    qkey(q, \"\\033\");\n    qkey(q, \"\\033\");\n");
     printf("    qquit(q);\n}\n");
 }

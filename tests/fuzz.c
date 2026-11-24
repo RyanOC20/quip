@@ -66,6 +66,9 @@ static pid_t start_run(const kcase *c, char *log, size_t logsize) {
         test_dir = dir;
         alarm(120);
         quip *q = kcase_run(c, NULL);
+        /* Leave the find or discard prompt, which ignore Ctrl-Q. */
+        qkey(q, "\x1b");
+        qkey(q, "\x1b");
         qquit(q);
         _exit(0);
     }
