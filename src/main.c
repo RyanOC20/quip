@@ -72,14 +72,7 @@ static void initEditor(void) {
     E.ft_sel = 0;
     E.ft_scroll = 0;
     updateWindowSize();
-    /* sigaction, not signal: on Linux, signal() under -std=c99 resets the
-     * handler after one use. No SA_RESTART, so a resize wakes the pending
-     * read at once instead of after its 0.1s timeout. */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handleSigWinCh;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGWINCH, &sa, NULL);
+    editorWatchResize();
 }
 
 int main(int argc, char **argv) {

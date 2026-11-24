@@ -342,7 +342,19 @@ void updateWindowSize(void) {
 
 /* Only note the resize: redrawing allocates memory, which a signal handler
  * must not do. editorReadKey calls editorHandleResize. */
-void handleSigWinCh(int unused __attribute__((unused))) { winch_pending = 1; }
+static void handleSigWinCh(int unused __attribute__((unused))) { winch_pending = 1; }
+
+/* Redraw whenever the terminal is resized. */
+void editorWatchResize(void) {
+    /* sigaction, not signal: on Linux, signal() under -std=c99 resets the
+     * handler after one use. No SA_RESTART, so a resize wakes the pending
+     * read at once instead of after its 0.1s timeout. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handleSigWinCh;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGWINCH, &sa, NULL);
+}
 
 static void editorHandleResize(void) {
     winch_pending = 0;

@@ -311,7 +311,7 @@ int enableRawMode(int fd);
 int editorReadKey(int fd);
 int readByteTimeout(unsigned char *ch, int ms);
 void updateWindowSize(void);
-void handleSigWinCh(int unused __attribute__((unused)));
+void editorWatchResize(void);
 
 /* undo.c */
 void editorPushSnapshot(void);
