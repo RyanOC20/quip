@@ -21,19 +21,24 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }} ${{ matrix.cc }}
+    name: ${{ matrix.os }} ${{ matrix.cc }}${{ matrix.optional && ' (optional)' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, cc: gcc, sanitize: true }
-          - { os: ubuntu-24.04, cc: clang, sanitize: true }
-          - { os: macos-15, cc: clang, sanitize: true }
+          - { os: ubuntu-24.04, cc: gcc, sanitize: true, optional: false }
+          - { os: ubuntu-24.04, cc: clang, sanitize: true, optional: false }
+          # GitHub is often short of Apple Silicon runners, so the required
+          # macOS check runs on Intel, and the Apple Silicon jobs run when a
+          # runner is free without blocking anything.
+          - { os: macos-15-intel, cc: clang, sanitize: true, optional: false }
+          - { os: macos-15, cc: clang, sanitize: true, optional: true }
           # "gcc" on macOS is clang; this is the real one. GCC has no
           # sanitizer runtime for Apple Silicon.
-          - { os: macos-15, cc: gcc-14, sanitize: false }
+          - { os: macos-15, cc: gcc-14, sanitize: false, optional: true }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,13 +70,17 @@ jobs:
           ls "$RUNNER_TEMP/prefix/share/quip/langs/c.lang"
 
   bench:
-    name: bench ${{ matrix.os }}
+    name: bench ${{ matrix.os }}${{ matrix.optional && ' (optional)' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        include:
+          - { os: ubuntu-24.04, optional: false }
+          - { os: macos-15-intel, optional: false }
+          - { os: macos-15, optional: true }
     steps:
       - uses: actions/checkout@v5
         with:
