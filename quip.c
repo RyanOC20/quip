@@ -1973,16 +1973,19 @@ static int editorFindBracketPair(int *brow, int *bcol, int *mrow, int *mcol) {
     int dir = o ? 1 : -1, depth = 0;
     *brow = y;
     *bcol = x;
+    /* The row in a local, so the loop never goes back to the global E. */
+    const erow *r = row;
     for (;;) {
         x += dir;
-        while (x < 0 || x >= E.row[y].rsize) {
+        while (x < 0 || x >= r->rsize) {
             y += dir;
             if (y < 0 || y >= E.numrows) return BRACKET_UNMATCHED;
-            x = dir > 0 ? 0 : E.row[y].rsize - 1;
+            r = &E.row[y];
+            x = dir > 0 ? 0 : r->rsize - 1;
         }
-        char ch = E.row[y].render[x];
+        char ch = r->render[x];
         if (ch != c && ch != want) continue;
-        if (!editorIsCodeAt(&E.row[y], x)) continue;
+        if (!editorIsCodeAt(r, x)) continue;
         if (ch == c) {
             depth++;
         } else if (depth-- == 0) {
