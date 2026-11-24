@@ -12,10 +12,13 @@ WARN = -std=c99 -Wall -Wextra -pedantic $(WERROR)
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 # The version is "git describe" in a checkout (v0.1.0, v0.1.0-3-gabc1234,
-# ...-dirty), else the fallback in quip.c. .build/version changes only when
+# ...-dirty), else the fallback in src/quip.h. .build/version changes only when
 # the version does, so a new commit rebuilds quip but a plain "make" does not.
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 VERSION_DEF = $(if $(VERSION),-DQUIP_VERSION='"$(VERSION)"')
+
+SRC = $(wildcard src/*.c)
+HDR = $(wildcard src/*.h)
 
 all: quip
 
@@ -23,17 +26,17 @@ all: quip
 	@mkdir -p .build
 	@if [ "$$(cat $@ 2>/dev/null)" != "$(VERSION)" ]; then echo "$(VERSION)" > $@; fi
 
-quip: quip.c .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) $(CFLAGS) $(LDFLAGS) -o $@ quip.c $(LDLIBS)
+quip: $(SRC) $(HDR) .build/version
+	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) $(CFLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 # For a debugger: no optimization, full debug info.
-quip-debug: quip.c .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O0 -g $(LDFLAGS) -o $@ quip.c $(LDLIBS)
+quip-debug: $(SRC) $(HDR) .build/version
+	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O0 -g $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 # AddressSanitizer and UndefinedBehaviorSanitizer.
 SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
-quip-asan: quip.c .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O1 -g $(SAN_FLAGS) $(LDFLAGS) -o $@ quip.c $(LDLIBS)
+quip-asan: $(SRC) $(HDR) .build/version
+	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O1 -g $(SAN_FLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 debug: quip-debug
 asan: quip-asan
@@ -114,7 +117,7 @@ bench: quip bench/bench
 # ------------------------------------------------------------------ Style
 
 CLANG_FORMAT ?= clang-format
-FORMAT_SRC = quip.c $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c)
+FORMAT_SRC = $(SRC) $(HDR) $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c)
 
 format:
 	$(CLANG_FORMAT) -i $(FORMAT_SRC)
