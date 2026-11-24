@@ -177,8 +177,8 @@ static void editorMoveWordRight(void) {
         }
         return;
     }
-    while (pos < row->size && is_separator(row->chars[pos])) pos++;
-    while (pos < row->size && !is_separator(row->chars[pos])) pos++;
+    while (pos < row->size && editorIsSeparator(row->chars[pos])) pos++;
+    while (pos < row->size && !editorIsSeparator(row->chars[pos])) pos++;
     editorSetCol(pos);
 }
 
@@ -196,8 +196,8 @@ static void editorMoveWordLeft(void) {
         return;
     }
     pos--;
-    while (pos > 0 && is_separator(row->chars[pos])) pos--;
-    while (pos > 0 && !is_separator(row->chars[pos - 1])) pos--;
+    while (pos > 0 && editorIsSeparator(row->chars[pos])) pos--;
+    while (pos > 0 && !editorIsSeparator(row->chars[pos - 1])) pos--;
     editorSetCol(pos);
 }
 

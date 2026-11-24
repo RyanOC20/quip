@@ -1,7 +1,9 @@
 /* The syntax highlighting lexer and its colors. */
 #include "quip.h"
 
-int is_separator(int c) { return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];", c) != NULL; }
+int editorIsSeparator(int c) {
+    return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];", c) != NULL;
+}
 
 /* True if delimiter 'd' (never, if the language has none) starts at
  * offset i of the n-byte row text p. */

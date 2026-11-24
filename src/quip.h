@@ -299,7 +299,7 @@ void editorSetStatusMessage(const char *fmt, ...) __attribute__((format(printf, 
 void editorClearStatusMessage(void);
 
 /* syntax.c */
-int is_separator(int c);
+int editorIsSeparator(int c);
 int hlAt(const char *p, int i, int n, const hldelim *d);
 void editorUpdateSyntax(erow *row);
 int editorSyntaxToColor(int hl);

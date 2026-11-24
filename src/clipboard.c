@@ -15,7 +15,7 @@ static int b64val(unsigned char c) {
 }
 
 /* Returns malloc'd NUL-terminated base64 string. Caller frees. */
-static char *base64_encode(const unsigned char *src, int len) {
+static char *b64Encode(const unsigned char *src, int len) {
     int outlen = 4 * ((len + 2) / 3);
     char *out = malloc(outlen + 1);
     int i = 0, j = 0;
@@ -40,7 +40,7 @@ static char *base64_encode(const unsigned char *src, int len) {
 }
 
 /* Returns malloc'd decoded buffer. Sets *outlen. Caller frees. */
-static char *base64_decode(const char *src, int *outlen) {
+static char *b64Decode(const char *src, int *outlen) {
     int srclen = 0;
     while (src[srclen]) srclen++;
     int maxout = (srclen / 4) * 3 + 3;
@@ -111,7 +111,7 @@ void editorCopySelection(void) {
     E.clipboard = text;
     E.clipboard_len = len;
 
-    char *b64 = base64_encode((unsigned char *)text, len);
+    char *b64 = b64Encode((unsigned char *)text, len);
     int seqlen = 8 + (int)strlen(b64); /* ESC ] 52 ; c ; <b64> BEL */
     char *seq = malloc(seqlen + 1);
     snprintf(seq, seqlen + 1, "\x1b]52;c;%s\x07", b64);
@@ -181,7 +181,7 @@ static char *editorReadClipboard(int *outlen) {
     buf[i] = '\0';
 
     if (i == 0) return NULL;
-    return base64_decode(buf, outlen);
+    return b64Decode(buf, outlen);
 }
 
 /* Inserts text at cursor, splitting on newlines. */
