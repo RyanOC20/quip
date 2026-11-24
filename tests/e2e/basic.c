@@ -10,7 +10,7 @@ TEST(open_shows_file_and_status) {
     CHECK_STR(qrow(q, 1), "  1 hello");
     CHECK_STR(qrow(q, 2), "  2 world");
     CHECK_STR(qline(q, 3), "~");
-    CHECK_STR(qstatus(q), "a.txt - 2 lines                                                              0:1");
+    CHECK_STR(qstatus(q), "a.txt - 2 lines                                                              1:1");
     /* The cursor sits on the first text column, past the gutter. */
     CHECK_INT(q->scr.y, 0);
     CHECK_INT(q->scr.x, 4);
@@ -23,7 +23,7 @@ TEST(type_and_save) {
     quip *q = qstart("a.txt", "world\n");
     qtype(q, "hello ");
     CHECK_STR(qline(q, 1), "hello world");
-    CHECK_STR(qstatus(q), "a.txt - 1 lines (modified)                                                   6:1");
+    CHECK_STR(qstatus(q), "a.txt - 1 line (modified)                                                    1:7");
     qkey(q, K_CTRL_S);
     CHECK_STR(qmessage(q), "12 bytes written on disk");
     int len;

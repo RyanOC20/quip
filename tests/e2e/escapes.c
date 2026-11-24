@@ -59,7 +59,7 @@ TEST(utf8_in_highlighted_code_is_drawn_as_text) {
 
 TEST(file_name_with_escape_in_status_bar) {
     quip *q = qstart("a\x1b]0;x\x07.txt", "x\n");
-    CHECK(strncmp(qstatus(q), "a?]0;x?.txt - 1 lines", 21) == 0);
+    CHECK(strncmp(qstatus(q), "a?]0;x?.txt - 1 line ", 21) == 0);
     qquit(q);
 }
 

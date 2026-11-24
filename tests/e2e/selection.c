@@ -24,7 +24,7 @@ TEST(shift_right_selects_and_status_counts) {
     for (int c = 5; c < 10; c++) CHECK(rev(q, 1, c));
     CHECK(!rev(q, 1, 10));
     const char *st = qstatus(q);
-    CHECK(strstr(st, "5 selected  5:1") != NULL);
+    CHECK(strstr(st, "5 selected  1:6") != NULL);
     qquit(q);
 }
 

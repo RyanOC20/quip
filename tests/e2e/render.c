@@ -110,7 +110,7 @@ TEST(brackets_in_strings_are_ignored) {
 
 TEST(status_bar_truncates_long_names) {
     quip *q = qstart("a_very_long_file_name_indeed.txt", "x\n");
-    CHECK(strncmp(qstatus(q), "a_very_long_file_nam - 1 lines", 30) == 0);
+    CHECK(strncmp(qstatus(q), "a_very_long_file_nam - 1 line ", 30) == 0);
     qquit(q);
 }
 
@@ -118,7 +118,7 @@ TEST(resize_redraws_to_new_size) {
     quip *q = qstart("a.txt", "hello\n");
     qresize(q, 10, 40);
     CHECK_STR(qrow(q, 1), "  1 hello");
-    CHECK(strncmp(qrow(q, 9), "a.txt - 1 lines", 15) == 0);
+    CHECK(strncmp(qrow(q, 9), "a.txt - 1 line ", 15) == 0);
     CHECK_INT((int)strlen(qrow(q, 9)), 40);
     qresize(q, 30, 100);
     CHECK_INT((int)strlen(qrow(q, 29)), 100);

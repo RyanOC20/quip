@@ -137,13 +137,14 @@ TEST(long_line_scrolls_horizontally) {
     qquit(q);
 }
 
-TEST(status_shows_column_and_line) {
+TEST(status_shows_line_and_column) {
+    /* line:column, both counted from 1, as compilers and grep print them. */
     quip *q = qstart("a.txt", "abc\ndef\n");
     qkey(q, K_DOWN);
     qkey(q, K_RIGHT);
     qkey(q, K_RIGHT);
     const char *st = qstatus(q);
     CHECK(strlen(st) > 4);
-    CHECK_STR(st + strlen(st) - 3, "2:2");
+    CHECK_STR(st + strlen(st) - 3, "2:3");
     qquit(q);
 }

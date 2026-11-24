@@ -2200,14 +2200,16 @@ void editorRefreshScreen(void) {
     abAppendLit(&ab,VT_CLEAR_EOL);
     abAppendLit(&ab,VT_REVERSE);
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-        E.filename, E.numrows, E.dirty ? "(modified)" : "");
+    int len = snprintf(status, sizeof(status), "%.20s - %d line%s %s",
+        E.filename, E.numrows, E.numrows == 1 ? "" : "s",
+        E.dirty ? "(modified)" : "");
+    /* The cursor as line:column, both from 1, as compilers print them. */
     long selchars = editorSelCharCount();
     int rlen = selchars ?
         snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d",
-            selchars,editorCursorCharCol(),E.rowoff+E.cy+1) :
+            selchars,E.rowoff+E.cy+1,editorCursorCharCol()+1) :
         snprintf(rstatus, sizeof(rstatus), "%d:%d",
-            editorCursorCharCol(),E.rowoff+E.cy+1);
+            E.rowoff+E.cy+1,editorCursorCharCol()+1);
     if (len > statuscols) len = statuscols;
     editorSanitize(status,len); /* The file name may hold anything. */
     abAppend(&ab,status,len);
