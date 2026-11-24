@@ -56,17 +56,34 @@ static const metric metrics[NMETRICS] = {
     {"stripped binary", "bytes", 1, 0},
 };
 
-static char *file200k, *file12mb, *bracket12mb;
+/* The input files, written once before any run so writing them is never
+ * part of a timing. */
+static char path200k[PATH_MAX], path12mb[PATH_MAX], pathbracket[PATH_MAX];
+
+/* Start 'bin' on the file at 'path'. */
+static quip *open_file(const char *bin, const char *path) {
+    const char *argv[] = {path, NULL};
+    qopts o = {.bin = bin, .rows = 40, .cols = 120, .argv = argv};
+    return qstart_opts(NULL, NULL, &o);
+}
+
+static void write_file(char *path, const char *dir, const char *name, const char *s) {
+    snprintf(path, PATH_MAX, "%s/%s", dir, name);
+    FILE *f = fopen(path, "w");
+    if (!f || fputs(s, f) == EOF || fclose(f) == EOF) {
+        perror(path);
+        exit(2);
+    }
+}
 
 /* One run of every measurement for 'bin'; results go to v[]. Runs in a
  * child process so the harness's failure exits stay contained. */
 static void measure_child(const char *bin, double *v) {
-    qopts o = {.bin = bin, .rows = 40, .cols = 120};
     quip *q;
     double t;
 
     t = now_ms();
-    q = qstart_opts("big.c", file200k, &o);
+    q = open_file(bin, path200k);
     v[M_LOAD] = now_ms() - t;
 
     /* Typing in the middle of a line: re-highlights one row. */
@@ -83,7 +100,7 @@ static void measure_child(const char *bin, double *v) {
     v[M_CASCADE] = now_ms() - t;
     qkill(q);
 
-    q = qstart_opts("big.c", file12mb, &o);
+    q = open_file(bin, path12mb);
     t = now_ms();
     for (int i = 0; i < 40; i++) qkey(q, K_PGDN);
     v[M_SCROLL] = (now_ms() - t) / 40;
@@ -94,7 +111,7 @@ static void measure_child(const char *bin, double *v) {
 
     /* A '{' that is never closed: each frame scans the whole file for its
      * partner. */
-    q = qstart_opts("br.c", bracket12mb, &o);
+    q = open_file(bin, pathbracket);
     t = now_ms();
     for (int i = 0; i < 10; i++) qkey(q, i % 2 ? K_LEFT : K_RIGHT);
     v[M_BRACKET] = (now_ms() - t) / 10;
@@ -187,13 +204,18 @@ int main(int argc, char **argv) {
         perror("mkdtemp");
         return 2;
     }
-    file200k = big_c(200000);
-    file12mb = big_c(240000);
+    char *file200k = big_c(200000), *file12mb = big_c(240000);
     size_t blen = strlen(file12mb);
-    bracket12mb = malloc(blen + 3);
+    char *bracket12mb = malloc(blen + 3);
     bracket12mb[0] = '{';
     bracket12mb[1] = '\n';
     memcpy(bracket12mb + 2, file12mb, blen + 1);
+    write_file(path200k, dir, "big.c", file200k);
+    write_file(path12mb, dir, "big12.c", file12mb);
+    write_file(pathbracket, dir, "br.c", bracket12mb);
+    free(file200k);
+    free(file12mb);
+    free(bracket12mb);
 
     double *vals = calloc((size_t)nbins * runs * NMETRICS, sizeof(double));
     for (int r = 0; r < runs; r++) {
