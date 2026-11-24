@@ -16,7 +16,7 @@ env:
   # quip before the 2026 rework. Every change is measured against it as
   # well as against its own base: no slowdown over 10%, and a stripped
   # binary at most 15% bigger.
-  BASELINE_REF: 03c54f49902f1dfc7d3ac70cdd519cfee2fa58a4
+  BASELINE_REF: 8247a12c0db730df40c02c307a0950d7e46a4b01
   CLANG_FORMAT_MAJOR: 23
 
 jobs:
