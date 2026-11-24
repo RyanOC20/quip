@@ -26,7 +26,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef QUIP_VERSION /* "make" sets it from git describe. */
 #define QUIP_VERSION "0.0.1"
+#endif
 #define QUIP_TAB_STOP 2 /* Tab width; the Tab key inserts spaces up to it. */
 
 #ifdef __linux__
