@@ -50,8 +50,8 @@ static char *read_file(const char *path) {
 static pid_t start_run(const kcase *c, char *log, size_t logsize) {
     char dir[PATH_MAX];
     int id = ++run_counter;
-    snprintf(dir, sizeof(dir), "%s/r%d", base, id);
-    snprintf(log, logsize, "%s/r%d.log", base, id);
+    path_fmt(dir, sizeof(dir), "%s/r%d", base, id);
+    path_fmt(log, logsize, "%s/r%d.log", base, id);
     mkdir(dir, 0700);
     fflush(stdout);
     pid_t pid = fork();
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
     fflush(stdout);
 
     const char *tmp = getenv("TMPDIR");
-    snprintf(base, sizeof(base), "%s/quip-fuzz-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-fuzz-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 2;

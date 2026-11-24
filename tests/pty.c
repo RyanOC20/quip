@@ -84,7 +84,7 @@ static void mkdirs(const char *path) {
 
 void qwrite(quip *q, const char *name, const char *content) {
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", q->dir, name);
+    path_fmt(path, sizeof(path), "%s/%s", q->dir, name);
     char *slash = strrchr(path, '/');
     *slash = '\0';
     mkdirs(path);
@@ -97,7 +97,7 @@ void qwrite(quip *q, const char *name, const char *content) {
 
 const char *qpath(quip *q, const char *name) {
     static char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", q->dir, name);
+    path_fmt(path, sizeof(path), "%s/%s", q->dir, name);
     return path;
 }
 
@@ -119,11 +119,11 @@ char *qread(quip *q, const char *name, int *len) {
 static void set_env(const char *dir) {
     char buf[PATH_MAX];
     setenv("HOME", dir, 1);
-    snprintf(buf, sizeof(buf), "%s/.config", dir);
+    path_fmt(buf, sizeof(buf), "%s/.config", dir);
     setenv("XDG_CONFIG_HOME", buf, 1);
-    snprintf(buf, sizeof(buf), "%s/.local/share", dir);
+    path_fmt(buf, sizeof(buf), "%s/.local/share", dir);
     setenv("XDG_DATA_HOME", buf, 1);
-    snprintf(buf, sizeof(buf), "%s/.no-data-dirs", dir);
+    path_fmt(buf, sizeof(buf), "%s/.no-data-dirs", dir);
     setenv("XDG_DATA_DIRS", buf, 1);
     unsetenv("QUIP_LANGDIR");
     setenv("TERM", "xterm-256color", 1);
@@ -141,7 +141,7 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     if (!o) o = &def;
     quip *q = calloc(1, sizeof(quip));
     const char *base = test_dir ? test_dir : "/tmp";
-    snprintf(q->dir, sizeof(q->dir), "%s/s%d", base, ++session_seq);
+    path_fmt(q->dir, sizeof(q->dir), "%s/s%d", base, ++session_seq);
     mkdirs(q->dir);
     if (content) qwrite(q, file, content);
     for (int i = 0; o->files && o->files[i]; i += 2) qwrite(q, o->files[i], o->files[i + 1]);

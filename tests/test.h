@@ -22,6 +22,10 @@ void test_on_fail_remove(void *ctx);
  * so a bad path can never delete anything else. */
 void test_remove_tree(const char *path);
 
+/* snprintf for paths: exits with an error rather than use a truncated path,
+ * which could name some other file. */
+void path_fmt(char *out, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
 /* The test's private temporary directory, removed after the test. */
 extern const char *test_dir;
 

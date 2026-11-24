@@ -66,12 +66,12 @@ static void print_file(const char *path) {
 
 static int start_test(running *r, int idx, const char *base) {
     r->idx = idx;
-    snprintf(r->dir, sizeof(r->dir), "%s/%s", base, tests[idx].name);
+    path_fmt(r->dir, sizeof(r->dir), "%s/%s", base, tests[idx].name);
     if (mkdir(r->dir, 0700) == -1) {
         perror(r->dir);
         return -1;
     }
-    snprintf(r->log, sizeof(r->log), "%s.log", r->dir);
+    path_fmt(r->log, sizeof(r->log), "%s.log", r->dir);
     gettimeofday(&r->start, NULL);
     fflush(stdout);
     r->pid = fork();
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
 
     const char *tmp = getenv("TMPDIR");
     char base[PATH_MAX];
-    snprintf(base, sizeof(base), "%s/quip-tests-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-tests-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 1;

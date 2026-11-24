@@ -185,13 +185,13 @@ int main(int argc, char **argv) {
     }
     const char *tmp = getenv("TMPDIR");
     char base[PATH_MAX];
-    snprintf(base, sizeof(base), "%s/quip-diff-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-diff-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 2;
     }
     char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/session", base);
+    path_fmt(dir, sizeof(dir), "%s/session", base);
 
     printf("comparing %s\n     with %s\n", oldbin, newbin);
     int differ = 0, failed = 0;

@@ -68,7 +68,7 @@ static quip *open_file(const char *bin, const char *path) {
 }
 
 static void write_file(char *path, const char *dir, const char *name, const char *s) {
-    snprintf(path, PATH_MAX, "%s/%s", dir, name);
+    path_fmt(path, PATH_MAX, "%s/%s", dir, name);
     FILE *f = fopen(path, "w");
     if (!f || fputs(s, f) == EOF || fclose(f) == EOF) {
         perror(path);
@@ -120,7 +120,7 @@ static void measure_child(const char *bin, double *v) {
 
 static double binary_size(const char *bin, const char *dir) {
     char out[PATH_MAX];
-    snprintf(out, sizeof(out), "%s/stripped", dir);
+    path_fmt(out, sizeof(out), "%s/stripped", dir);
     pid_t pid = fork();
     if (pid == 0) {
         execlp("strip", "strip", "-o", out, bin, (char *)NULL);
@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
 
     const char *tmp = getenv("TMPDIR");
     char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/quip-tests-bench-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(dir, sizeof(dir), "%s/quip-tests-bench-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(dir)) {
         perror("mkdtemp");
         return 2;

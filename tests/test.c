@@ -4,6 +4,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -107,4 +108,15 @@ void test_remove_tree(const char *path) {
         _exit(127);
     }
     if (pid > 0) waitpid(pid, NULL, 0);
+}
+
+void path_fmt(char *out, size_t size, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out, size, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= size) {
+        fprintf(stderr, "path too long: %s...\n", out);
+        exit(2);
+    }
 }
