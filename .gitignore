@@ -1,1 +1,8 @@
 quip
+quip-asan
+tests/run
+tests/fuzz
+tests/differential
+bench/bench
+*.dSYM
+.build/

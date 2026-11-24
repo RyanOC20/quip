@@ -1330,8 +1330,8 @@ static int editorHighlightRow(erow *row, int state) {
             }
         }
 
-        /* Non printable chars. */
-        if (!isprint(c)) {
+        /* Control characters. Bytes >= 0x80 are UTF-8 text. */
+        if (c < 0x20 || c == 0x7f) {
             hl[i++] = HL_NONPRINT;
             continue;
         }
@@ -1766,6 +1766,29 @@ writeerr:
 
 /* ============================= Terminal update ============================ */
 
+/* Bytes that a terminal would obey instead of print: a C0 control or DEL
+ * (1 byte), or a C1 control U+0080-U+009F written in UTF-8 (2 bytes).
+ * Returns how many bytes at s[i] form one, or 0. Text from files, file names
+ * and messages must never reach the terminal with these intact. */
+static int editorCtrlLen(const char *s, int i, int n) {
+    unsigned char b = (unsigned char)s[i];
+    if (b < 0x20 || b == 0x7f) return 1;
+    if (b == 0xc2 && i+1 < n &&
+        (unsigned char)s[i+1] >= 0x80 && (unsigned char)s[i+1] <= 0x9f)
+        return 2;
+    return 0;
+}
+
+/* Replace control characters in 's' with '?', one per byte. */
+static void editorSanitize(char *s, int n) {
+    int i = 0;
+    while (i < n) {
+        int k = editorCtrlLen(s,i,n);
+        if (k == 0) { i++; continue; }
+        while (k--) s[i++] = '?';
+    }
+}
+
 /* We define a very simple "append buffer" structure, that is an heap
  * allocated string where we can append to. This is useful in order to
  * write all the escape sequences in a buffer and flush them to the standard
@@ -1843,6 +1866,12 @@ static int editorSelBounds(int *sr, int *sc, int *er, int *ec) {
     }
     if (*er >= E.numrows) { *er = E.numrows - 1; *ec = E.row[*er].size; }
     if (*sr > *er)        { *sr = *er; *sc = *ec; }
+    /* An end can lie past the end of its line (a click beyond the last
+     * column, a cursor parked by sideways scrolling): clamp it, so callers
+     * only ever see real positions. */
+    if (*sc > E.row[*sr].size) *sc = E.row[*sr].size;
+    if (*ec > E.row[*er].size) *ec = E.row[*er].size;
+    if (*sr == *er && *sc > *ec) *sc = *ec;
     return !(*sr == *er && *sc == *ec);
 }
 
@@ -2051,6 +2080,7 @@ void editorRefreshScreen(void) {
         int current_color = -1;
         int in_selection = 0;
         int cur_bg = BG_DEFAULT; /* Background SGR in effect, a BG_* value. */
+        int cells = 0;           /* Screen cells the text took. */
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
@@ -2100,19 +2130,24 @@ void editorRefreshScreen(void) {
                     cur_bg = want_bg;
                 }
 
-                if (hl[j] == HL_NONPRINT) {
-                    char sym;
+                int ctrl = editorCtrlLen(c,j,len);
+                if (ctrl) {
+                    /* A control character is never sent as is, whatever the
+                     * lexer made of it: draw it reversed in caret notation,
+                     * ^A as 'A' and ESC as '[', and DEL or a C1 control as
+                     * '?', one cell per byte. */
+                    unsigned char b = (unsigned char)c[j];
+                    char sym[2] = {'?','?'};
+                    if (b < 0x20) sym[0] = '@'+b;
                     if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
                     if (!in_selection) abAppendLit(&ab,VT_REVERSE);
-                    if (c[j] <= 26)
-                        sym = '@'+c[j];
-                    else
-                        sym = '?';
-                    abAppend(&ab,&sym,1);
+                    abAppend(&ab,sym,ctrl);
                     abAppendLit(&ab,VT_RESET);
                     current_color = -1;
+                    cur_bg = BG_DEFAULT; /* VT_RESET cleared it too. */
                     if (in_selection) abAppendLit(&ab,VT_REVERSE);
-                    run_start = j+1; /* 'sym' replaces c[j]; skip it in the run. */
+                    j += ctrl-1;
+                    run_start = j+1; /* 'sym' replaces the bytes. */
                 } else if (hl[j] == HL_NORMAL) {
                     if (current_color != -1) {
                         if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
@@ -2136,6 +2171,13 @@ void editorRefreshScreen(void) {
             }
             /* Flush the trailing run. */
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+            /* One cell per byte, except that UTF-8 continuation bytes join
+             * the character before them; a control is a cell per byte. */
+            for (j = 0; j < len; j++) {
+                int ctrl = editorCtrlLen(c,j,len);
+                if (ctrl) { cells += ctrl; j += ctrl-1; }
+                else if (((unsigned char)c[j] & 0xc0) != 0x80) cells++;
+            }
         }
         abAppendLit(&ab,VT_FG_DEFAULT);
         /* Keep a colored background out of the EOL erase. */
@@ -2145,7 +2187,9 @@ void editorRefreshScreen(void) {
          * last selected character. */
         if (sel_newline && !in_selection) abAppendLit(&ab,VT_REVERSE);
         if (!sel_newline && in_selection) abAppendLit(&ab,VT_REVERSE_OFF);
-        abAppendLit(&ab,VT_CLEAR_EOL);
+        /* A line that fills the text area leaves the terminal at its last
+         * column, where an erase would wipe the character just drawn. */
+        if (cells < E.screencols) abAppendLit(&ab,VT_CLEAR_EOL);
         if (sel_newline) abAppendLit(&ab,VT_REVERSE_OFF);
         abAppendLit(&ab,"\r\n");
     }
@@ -2156,15 +2200,18 @@ void editorRefreshScreen(void) {
     abAppendLit(&ab,VT_CLEAR_EOL);
     abAppendLit(&ab,VT_REVERSE);
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-        E.filename, E.numrows, E.dirty ? "(modified)" : "");
+    int len = snprintf(status, sizeof(status), "%.20s - %d line%s %s",
+        E.filename, E.numrows, E.numrows == 1 ? "" : "s",
+        E.dirty ? "(modified)" : "");
+    /* The cursor as line:column, both from 1, as compilers print them. */
     long selchars = editorSelCharCount();
     int rlen = selchars ?
         snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d",
-            selchars,editorCursorCharCol(),E.rowoff+E.cy+1) :
+            selchars,E.rowoff+E.cy+1,editorCursorCharCol()+1) :
         snprintf(rstatus, sizeof(rstatus), "%d:%d",
-            editorCursorCharCol(),E.rowoff+E.cy+1);
+            E.rowoff+E.cy+1,editorCursorCharCol()+1);
     if (len > statuscols) len = statuscols;
+    editorSanitize(status,len); /* The file name may hold anything. */
     abAppend(&ab,status,len);
     while(len < statuscols) {
         if (statuscols - len == rlen) {
@@ -2221,6 +2268,8 @@ void editorSetStatusMessage(const char *fmt, ...) {
     va_start(ap,fmt);
     vsnprintf(E.statusmsg,sizeof(E.statusmsg),fmt,ap);
     va_end(ap);
+    /* Messages quote paths and file names, which may hold anything. */
+    editorSanitize(E.statusmsg,(int)strlen(E.statusmsg));
     E.statusmsg_time = time(NULL);
 }
 
@@ -2356,14 +2405,10 @@ void editorMoveCursor(int key) {
             if (E.coloff) {
                 E.coloff--;
             } else {
-                if (filerow > 0) {
-                    E.cy--;
-                    E.cx = E.row[filerow-1].size;
-                    if (E.cx > E.screencols-1) {
-                        E.coloff = E.cx-E.screencols+1;
-                        E.cx = E.screencols-1;
-                    }
-                }
+                /* To the end of the previous line, scrolling up when the
+                 * cursor is on the top screen row. */
+                if (filerow > 0)
+                    editorSetCursorPos(filerow-1, E.row[filerow-1].size);
             }
         } else {
             E.cx -= 1;
@@ -2562,12 +2607,18 @@ void editorToggleLineComment(int filerow) {
         indent++;
 
     if (scs->len) {
+        /* "// " with one space of padding, taken away again on uncomment.
+         * An empty line gets no padding, which would be trailing space. */
         if (hlAt(row->chars,indent,row->size,scs)) {
-            editorRowDelRange(row,indent,scs->len);
-            col = editorColAfterDel(col,indent,scs->len);
+            int n = scs->len;
+            if (indent+n < row->size && row->chars[indent+n] == ' ') n++;
+            editorRowDelRange(row,indent,n);
+            col = editorColAfterDel(col,indent,n);
         } else {
+            int pad = indent < row->size;
+            if (pad) editorRowInsRange(row,indent," ",1);
             editorRowInsRange(row,indent,scs->s,scs->len);
-            if (col >= indent) col += scs->len;
+            if (col >= indent) col += scs->len+pad;
         }
     } else {
         int end = row->size;
@@ -3040,6 +3091,20 @@ void editorPushSnapshot(void) {
     }
     undo_count = undo_cur + 1;
 
+    /* Serialize the current document. When it equals the newest step (as
+     * right after an undo, or an edit that changed nothing) there is no new
+     * step to record; only note where the cursor is, so that undoing the
+     * coming edit brings the cursor back here. */
+    int curlen;
+    char *cur = editorRowsToString(&curlen);
+    if (undo_cur >= 0 && curlen == undo_base_len &&
+        memcmp(cur, undo_base, curlen) == 0) {
+        editorSnapshot *t = &undo_hist[undo_cur];
+        t->cx = E.cx; t->cy = E.cy; t->rowoff = E.rowoff; t->coloff = E.coloff;
+        free(cur);
+        return;
+    }
+
     /* If the history is full, drop the oldest entry. */
     if (undo_count == UNDO_HISTORY_MAX) {
         free(undo_hist[0].old);
@@ -3059,11 +3124,8 @@ void editorPushSnapshot(void) {
         undo_hist[0].pos = 0;
     }
 
-    /* Serialize the current document and diff it against the base (the text of
-     * the snapshot at undo_cur), storing only the changed middle span. */
-    int curlen;
-    char *cur = editorRowsToString(&curlen);
-
+    /* Diff the document against the base (the text of the snapshot at
+     * undo_cur), storing only the changed middle span. */
     int minlen = (undo_base_len < curlen) ? undo_base_len : curlen;
     int p = 0, s = 0;
     while (p < minlen && undo_base[p] == cur[p]) p++;
@@ -3091,7 +3153,19 @@ void editorPushSnapshot(void) {
     undo_base_len = curlen;
 }
 
+/* Record the document as a step if it changed since the newest one, so
+ * that the latest edits can be undone and then redone. */
+static void editorCommitPending(void) {
+    int len;
+    char *cur = editorRowsToString(&len);
+    int same = len == undo_base_len && memcmp(cur, undo_base, len) == 0;
+    free(cur);
+    if (!same) editorPushSnapshot();
+    undo_last_insert = 0;
+}
+
 void editorUndo(void) {
+    editorCommitPending();
     if (undo_cur <= 0) {
         editorSetStatusMessage("Nothing to undo.");
         return;
@@ -3133,10 +3207,17 @@ void editorRedo(void) {
     undo_base_len = nextlen;
 
     editorRebuildRows(undo_base, undo_base_len);
-    E.cx     = e->cx;
-    E.cy     = e->cy;
-    E.rowoff = e->rowoff;
-    E.coloff = e->coloff;
+    /* The cursor goes to the end of the restored text. */
+    int end = e->pos + e->newlen, row = 0, col = 0;
+    for (int i = 0; i < end && i < undo_base_len; i++) {
+        if (undo_base[i] == '\n') { row++; col = 0; }
+        else col++;
+    }
+    if (row >= E.numrows && E.numrows > 0) {
+        row = E.numrows - 1;
+        col = E.row[row].size;
+    }
+    editorSetCursorPos(row, col);
     E.dirty  = (undo_cur != undo_saved);
     E.sel_active = 0;
     undo_last_insert = 0;
@@ -3300,6 +3381,7 @@ static void ftDrawSidebarRow(struct abuf *ab, int y) {
         if (*p && W > 0) line[W-1] = '~'; /* name was truncated */
     }
     while (n < W) line[n++] = ' ';
+    editorSanitize(line,W); /* File names may hold anything. */
 
     int selected = (has && idx == E.ft_sel);
     if (selected)               abAppendLit(ab,VT_REVERSE);
@@ -3458,7 +3540,10 @@ void editorProcessKeypress(int fd) {
      * closes it and Ctrl-Q still quits; everything else is consumed. */
     if (E.ft_open && E.ft_focus) {
         if (c == CTRL_E) { ftToggle(); return; }
-        if (c != CTRL_Q && c != SCROLL_LEFT && c != SCROLL_RIGHT) {
+        /* Mouse buttons go to the main handler, which knows whether the
+         * press landed in the sidebar or the text. */
+        if (c != CTRL_Q && c != SCROLL_LEFT && c != SCROLL_RIGHT &&
+            c != MOUSE_CLICK && c != MOUSE_DRAG && c != MOUSE_RELEASE) {
             ftHandleKey(c);
             return;
         }
@@ -3532,8 +3617,10 @@ void editorProcessKeypress(int fd) {
         exit(0);
         break;
     case CTRL_S:        /* Ctrl-s */
-        editorSave();
-        undo_saved = undo_cur;
+        /* Make the saved text a step of its own, so undo and redo know
+         * when the document matches the file again. */
+        editorCommitPending();
+        if (editorSave() == 0) undo_saved = undo_cur;
         break;
     case CTRL_F:
         editorFind(fd);
@@ -3727,8 +3814,10 @@ void editorProcessKeypress(int fd) {
         editorSelClear();
         break;
     default:
-        /* Soft key codes are not text; never insert one as a byte. */
+        /* Soft key codes are not text; never insert one as a byte. Nor
+         * an unbound Ctrl key: it would put a control byte in the file. */
         if (c >= ARROW_LEFT) break;
+        if (c >= 0 && c < 0x20 && c != TAB) break; /* UTF-8 bytes are < 0 */
         if (!undo_last_insert || E.sel_active) {
             editorPushSnapshot();
             undo_last_insert = 1;
