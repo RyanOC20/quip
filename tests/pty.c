@@ -127,6 +127,9 @@ static void set_env(const char *dir) {
     setenv("XDG_DATA_DIRS", buf, 1);
     unsetenv("QUIP_LANGDIR");
     setenv("TERM", "xterm-256color", 1);
+    /* With AddressSanitizer on Intel macOS, the system allocator otherwise
+     * prints "nano zone abandoned" to the terminal at startup. */
+    setenv("MallocNanoZone", "0", 1);
     /* Sanitizer reports go to files, not the terminal, and fail the test. */
     snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
     setenv("ASAN_OPTIONS", buf, 1);
