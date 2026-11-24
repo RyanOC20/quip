@@ -127,6 +127,21 @@ TEST(resize_redraws_to_new_size) {
     CHECK_INT((int)strlen(qrow(q, 29)), 100);
     qquit(q);
 }
+
+TEST(resize_during_search_keeps_the_prompt) {
+    /* Regression: on Linux any resize made quip exit. The prompt reads keys
+     * itself, so a resize there must redraw it and carry on. */
+    quip *q = qstart("a.c", "int alpha;\nint beta;\n");
+    qkey(q, K_CTRL_F);
+    qtype(q, "be");
+    qresize(q, 12, 50);
+    CHECK_STR(qrow(q, 12), "Search: be (Use ESC/Arrows/Enter)");
+    qtype(q, "t");
+    CHECK_STR(qmessage(q), "Search: bet (Use ESC/Arrows/Enter)");
+    qkey(q, K_ENTER);
+    CHECK_INT(q->scr.x, 4 + 4);
+    qquit(q);
+}
 TEST(full_width_line_keeps_last_column) {
     /* A line exactly as wide as the text area: its last character must
      * survive the erase-to-end-of-line that follows it. */

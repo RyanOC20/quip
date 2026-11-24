@@ -900,19 +900,37 @@ static char *base64_decode(const char *src, int *outlen) {
 
 /* ========================================================================= */
 
+/* Set by the SIGWINCH handler; editorReadKey redraws for the new size. */
+static volatile sig_atomic_t winch_pending = 0;
+static void editorHandleResize(void);
+
+/* Read one byte. Returns 1, or 0 when the read times out (raw mode waits
+ * 0.1s) or fails. A signal arriving meanwhile does not end the wait. */
+static int readByte(int fd, char *c) {
+    ssize_t n;
+    do n = read(fd, c, 1);
+    while (n == -1 && errno == EINTR);
+    return n == 1;
+}
+
 /* Read a key from the terminal put in raw mode, trying to handle
- * escape sequences. */
+ * escape sequences. While waiting for the first byte it redraws whenever
+ * the terminal is resized. */
 int editorReadKey(int fd) {
-    int nread;
     char c, seq[5];
-    while ((nread = read(fd, &c, 1)) == 0);
-    if (nread == -1) exit(1);
+    for (;;) {
+        ssize_t n = read(fd, &c, 1);
+        if (n == 1) break;
+        if (n == -1 && errno != EINTR && errno != EAGAIN)
+            editorDie("Unable to read from the terminal", errno);
+        if (winch_pending) editorHandleResize();
+    }
 
     while (1) {
         switch (c) {
         case ESC: /* escape sequence */
             /* If this is just an ESC, we'll timeout here. */
-            if (read(fd, seq, 1) == 0) return ESC;
+            if (!readByte(fd, seq)) return ESC;
 
             /* ESC b / ESC f: Alt+Left / Alt+Right (2-byte sequences).
              * Must be checked before reading seq[1] or the second read
@@ -924,20 +942,20 @@ int editorReadKey(int fd) {
              * that leaked into stdin).  Consume until BEL or ST so the base64
              * payload is never misinterpreted as keystrokes. */
             if (seq[0] == ']') {
-                char osc;
-                while (read(fd, &osc, 1) == 1 && (unsigned char)osc != 0x07 &&
+                char osc = 0;
+                while (readByte(fd, &osc) && (unsigned char)osc != 0x07 &&
                        (unsigned char)osc != 0x1b) {}
-                if ((unsigned char)osc == 0x1b) read(fd, &osc, 1); /* eat \ of ST */
+                if ((unsigned char)osc == 0x1b) readByte(fd, &osc); /* eat \ of ST */
                 break; /* restart the while(1) to read the next real key */
             }
 
-            if (read(fd, seq + 1, 1) == 0) return ESC;
+            if (!readByte(fd, seq + 1)) return ESC;
 
             /* ESC [ sequences. */
             if (seq[0] == '[') {
                 if (seq[1] >= '0' && seq[1] <= '9') {
                     /* Extended escape, read additional byte. */
-                    if (read(fd, seq + 2, 1) == 0) return ESC;
+                    if (!readByte(fd, seq + 2)) return ESC;
                     if (seq[2] == '~') {
                         switch (seq[1]) {
                         case '3': return DEL_KEY;
@@ -947,8 +965,8 @@ int editorReadKey(int fd) {
                     } else if (seq[1] == '1' && seq[2] == ';') {
                         /* ESC [ 1 ; <modifier> <dir>: modifier+arrow sequences.
                          * Modifier: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl. */
-                        if (read(fd, seq + 3, 1) == 0) return ESC;
-                        if (read(fd, seq + 4, 1) == 0) return ESC;
+                        if (!readByte(fd, seq + 3)) return ESC;
+                        if (!readByte(fd, seq + 4)) return ESC;
                         switch (seq[3]) {
                         case '2': /* Shift */
                             switch (seq[4]) {
@@ -1002,9 +1020,9 @@ int editorReadKey(int fd) {
                     case 'F': return END_KEY;
                     case 'Z': return SHIFT_TAB;
                     case 'M': {
-                        if (read(fd, seq + 2, 1) == 0) return ESC;
-                        if (read(fd, seq + 3, 1) == 0) return ESC;
-                        if (read(fd, seq + 4, 1) == 0) return ESC;
+                        if (!readByte(fd, seq + 2)) return ESC;
+                        if (!readByte(fd, seq + 3)) return ESC;
+                        if (!readByte(fd, seq + 4)) return ESC;
                         unsigned char mbtn = (unsigned char)seq[2];
                         int b = mbtn - 32;
                         if (b & 64) {
@@ -1055,7 +1073,7 @@ int getCursorPosition(int ifd, int ofd, int *rows, int *cols) {
 
     /* Read the response: ESC [ rows ; cols R */
     while (i < sizeof(buf) - 1) {
-        if (read(ifd, buf + i, 1) != 1) break;
+        if (!readByte(ifd, buf + i)) break;
         if (buf[i] == 'R') break;
         i++;
     }
@@ -2972,9 +2990,11 @@ static int readByteTimeout(unsigned char *ch, int ms) {
     FD_SET(STDIN_FILENO, &fds);
     tv.tv_sec = ms / 1000;
     tv.tv_usec = (ms % 1000) * 1000;
-    int r = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    int r;
+    do r = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    while (r == -1 && errno == EINTR);
     if (r <= 0) return r;
-    return (read(STDIN_FILENO, ch, 1) == 1) ? 1 : -1;
+    return readByte(STDIN_FILENO, (char *)ch) ? 1 : -1;
 }
 
 /* Queries terminal clipboard via OSC 52.
@@ -3939,7 +3959,12 @@ void updateWindowSize(void) {
     editorUpdateGeometry(); /* Reserve columns for the sidebar and gutter. */
 }
 
-void handleSigWinCh(int unused __attribute__((unused))) {
+/* Only note the resize: redrawing allocates memory, which a signal handler
+ * must not do. editorReadKey calls editorHandleResize. */
+static void handleSigWinCh(int unused __attribute__((unused))) { winch_pending = 1; }
+
+static void editorHandleResize(void) {
+    winch_pending = 0;
     updateWindowSize();
     if (E.cy >= E.screenrows) {
         E.rowoff += E.cy - (E.screenrows - 1);
@@ -3974,7 +3999,14 @@ void initEditor(void) {
     E.ft_sel = 0;
     E.ft_scroll = 0;
     updateWindowSize();
-    signal(SIGWINCH, handleSigWinCh);
+    /* sigaction, not signal: on Linux, signal() under -std=c99 resets the
+     * handler after one use. No SA_RESTART, so a resize wakes the pending
+     * read at once instead of after its 0.1s timeout. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handleSigWinCh;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGWINCH, &sa, NULL);
 }
 
 int main(int argc, char **argv) {
