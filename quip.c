@@ -2080,6 +2080,7 @@ void editorRefreshScreen(void) {
         int current_color = -1;
         int in_selection = 0;
         int cur_bg = BG_DEFAULT; /* Background SGR in effect, a BG_* value. */
+        int cells = 0;           /* Screen cells the text took. */
         if (len > 0) {
             if (len > E.screencols) len = E.screencols;
             char *c = r->render+E.coloff;
@@ -2170,6 +2171,13 @@ void editorRefreshScreen(void) {
             }
             /* Flush the trailing run. */
             if (j > run_start) abAppend(&ab,c+run_start,j-run_start);
+            /* One cell per byte, except that UTF-8 continuation bytes join
+             * the character before them; a control is a cell per byte. */
+            for (j = 0; j < len; j++) {
+                int ctrl = editorCtrlLen(c,j,len);
+                if (ctrl) { cells += ctrl; j += ctrl-1; }
+                else if (((unsigned char)c[j] & 0xc0) != 0x80) cells++;
+            }
         }
         abAppendLit(&ab,VT_FG_DEFAULT);
         /* Keep a colored background out of the EOL erase. */
@@ -2179,7 +2187,9 @@ void editorRefreshScreen(void) {
          * last selected character. */
         if (sel_newline && !in_selection) abAppendLit(&ab,VT_REVERSE);
         if (!sel_newline && in_selection) abAppendLit(&ab,VT_REVERSE_OFF);
-        abAppendLit(&ab,VT_CLEAR_EOL);
+        /* A line that fills the text area leaves the terminal at its last
+         * column, where an erase would wipe the character just drawn. */
+        if (cells < E.screencols) abAppendLit(&ab,VT_CLEAR_EOL);
         if (sel_newline) abAppendLit(&ab,VT_REVERSE_OFF);
         abAppendLit(&ab,"\r\n");
     }

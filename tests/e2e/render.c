@@ -124,3 +124,15 @@ TEST(resize_redraws_to_new_size) {
     CHECK_INT((int)strlen(qrow(q, 29)), 100);
     qquit(q);
 }
+TEST(full_width_line_keeps_last_column) {
+    /* A line exactly as wide as the text area: its last character must
+     * survive the erase-to-end-of-line that follows it. */
+    char line[80];
+    memset(line, 'x', 75);
+    line[75] = 'E';
+    line[76] = '\n';
+    line[77] = '\0';
+    quip *q = qstart("a.txt", line);
+    CHECK_INT(qcell(q, 1, 80)->cp, 'E');
+    qquit(q);
+}
