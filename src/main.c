@@ -21,7 +21,7 @@ int editorLoadFile(const char *path) {
         editorRefreshScreen();
         int c = editorReadKey(STDIN_FILENO);
         if (c != 'y' && c != 'Y') {
-            editorSetStatusMessage("");
+            editorClearStatusMessage();
             return 1;
         }
     }
@@ -44,7 +44,7 @@ int editorLoadFile(const char *path) {
     E.dirty = 0;
 
     E.ft_focus = 0; /* Hand focus to the editor so the user can type. */
-    editorSetStatusMessage("");
+    editorClearStatusMessage();
     return 0;
 }
 

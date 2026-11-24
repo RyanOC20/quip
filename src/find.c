@@ -40,7 +40,7 @@ void editorFind(int fd) {
                 E.rowoff = saved_rowoff;
             }
             FIND_RESTORE_HL;
-            editorSetStatusMessage("");
+            editorClearStatusMessage();
             return;
         } else if (c == ARROW_RIGHT || c == ARROW_DOWN) {
             find_next = 1;

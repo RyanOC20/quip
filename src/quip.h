@@ -295,7 +295,8 @@ int editorCharToRenderCol(erow *row, int char_col);
 int editorRenderToCharCol(erow *row, int rcol);
 void editorUpdateGeometry(void);
 void editorRefreshScreen(void);
-void editorSetStatusMessage(const char *fmt, ...);
+void editorSetStatusMessage(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void editorClearStatusMessage(void);
 
 /* syntax.c */
 int is_separator(int c);

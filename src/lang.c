@@ -79,7 +79,8 @@ static const struct {
 char hl_load_error[80];
 int hl_load_errors = 0;
 
-static void hlLoadError(const char *file, int line, const char *fmt, ...) {
+__attribute__((format(printf, 3, 4))) static void hlLoadError(const char *file, int line,
+                                                              const char *fmt, ...) {
     if (hl_load_errors++) return;
     int len = line ? snprintf(hl_load_error, sizeof(hl_load_error), "%s:%d: ", file, line)
                    : snprintf(hl_load_error, sizeof(hl_load_error), "%s: ", file);
