@@ -19,6 +19,9 @@ typedef struct kcase {
 
 /* Build the session for 'seed' with 'nkeys' keys. */
 void kcase_make(kcase *c, uint32_t seed, int nkeys);
+/* The same, leaving out the file tree (Ctrl-E), which can open another
+ * file and start a new undo history. */
+void kcase_make_no_tree(kcase *c, uint32_t seed, int nkeys);
 void kcase_free(kcase *c);
 /* Copy of 'c' keeping only the keys whose 'keep' entry is non-zero. */
 void kcase_subset(const kcase *c, const char *keep, kcase *out);

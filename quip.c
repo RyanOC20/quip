@@ -3083,6 +3083,20 @@ void editorPushSnapshot(void) {
     }
     undo_count = undo_cur + 1;
 
+    /* Serialize the current document. When it equals the newest step (as
+     * right after an undo, or an edit that changed nothing) there is no new
+     * step to record; only note where the cursor is, so that undoing the
+     * coming edit brings the cursor back here. */
+    int curlen;
+    char *cur = editorRowsToString(&curlen);
+    if (undo_cur >= 0 && curlen == undo_base_len &&
+        memcmp(cur, undo_base, curlen) == 0) {
+        editorSnapshot *t = &undo_hist[undo_cur];
+        t->cx = E.cx; t->cy = E.cy; t->rowoff = E.rowoff; t->coloff = E.coloff;
+        free(cur);
+        return;
+    }
+
     /* If the history is full, drop the oldest entry. */
     if (undo_count == UNDO_HISTORY_MAX) {
         free(undo_hist[0].old);
@@ -3102,11 +3116,8 @@ void editorPushSnapshot(void) {
         undo_hist[0].pos = 0;
     }
 
-    /* Serialize the current document and diff it against the base (the text of
-     * the snapshot at undo_cur), storing only the changed middle span. */
-    int curlen;
-    char *cur = editorRowsToString(&curlen);
-
+    /* Diff the document against the base (the text of the snapshot at
+     * undo_cur), storing only the changed middle span. */
     int minlen = (undo_base_len < curlen) ? undo_base_len : curlen;
     int p = 0, s = 0;
     while (p < minlen && undo_base[p] == cur[p]) p++;
@@ -3134,7 +3145,19 @@ void editorPushSnapshot(void) {
     undo_base_len = curlen;
 }
 
+/* Record the document as a step if it changed since the newest one, so
+ * that the latest edits can be undone and then redone. */
+static void editorCommitPending(void) {
+    int len;
+    char *cur = editorRowsToString(&len);
+    int same = len == undo_base_len && memcmp(cur, undo_base, len) == 0;
+    free(cur);
+    if (!same) editorPushSnapshot();
+    undo_last_insert = 0;
+}
+
 void editorUndo(void) {
+    editorCommitPending();
     if (undo_cur <= 0) {
         editorSetStatusMessage("Nothing to undo.");
         return;
@@ -3176,10 +3199,17 @@ void editorRedo(void) {
     undo_base_len = nextlen;
 
     editorRebuildRows(undo_base, undo_base_len);
-    E.cx     = e->cx;
-    E.cy     = e->cy;
-    E.rowoff = e->rowoff;
-    E.coloff = e->coloff;
+    /* The cursor goes to the end of the restored text. */
+    int end = e->pos + e->newlen, row = 0, col = 0;
+    for (int i = 0; i < end && i < undo_base_len; i++) {
+        if (undo_base[i] == '\n') { row++; col = 0; }
+        else col++;
+    }
+    if (row >= E.numrows && E.numrows > 0) {
+        row = E.numrows - 1;
+        col = E.row[row].size;
+    }
+    editorSetCursorPos(row, col);
     E.dirty  = (undo_cur != undo_saved);
     E.sel_active = 0;
     undo_last_insert = 0;
@@ -3579,8 +3609,10 @@ void editorProcessKeypress(int fd) {
         exit(0);
         break;
     case CTRL_S:        /* Ctrl-s */
-        editorSave();
-        undo_saved = undo_cur;
+        /* Make the saved text a step of its own, so undo and redo know
+         * when the document matches the file again. */
+        editorCommitPending();
+        if (editorSave() == 0) undo_saved = undo_cur;
         break;
     case CTRL_F:
         editorFind(fd);

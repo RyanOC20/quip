@@ -36,8 +36,8 @@ E2E = $(wildcard tests/e2e/*.c)
 quip-asan: quip.c
 	$(CC) -std=c99 -Wall -W -pedantic -O1 -g $(SAN_FLAGS) -o $@ quip.c
 
-tests/run: tests/runner.c $(TEST_LIB) $(E2E) $(TEST_HDR)
-	$(CC) $(TEST_CFLAGS) -o $@ tests/runner.c $(TEST_LIB) $(E2E)
+tests/run: tests/runner.c tests/keygen.c tests/keygen.h $(TEST_LIB) $(E2E) $(TEST_HDR)
+	$(CC) $(TEST_CFLAGS) -o $@ tests/runner.c tests/keygen.c $(TEST_LIB) $(E2E)
 
 tests/fuzz: tests/fuzz.c tests/keygen.c tests/keygen.h $(TEST_LIB) $(TEST_HDR)
 	$(CC) $(TEST_CFLAGS) -o $@ tests/fuzz.c tests/keygen.c $(TEST_LIB)

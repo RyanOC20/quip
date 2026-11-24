@@ -112,6 +112,12 @@ void kcase_make(kcase *c, uint32_t seed, int nkeys) {
     c->nkeys = nkeys;
 }
 
+void kcase_make_no_tree(kcase *c, uint32_t seed, int nkeys) {
+    kcase_make(c, seed, nkeys);
+    for (int i = 0; i < c->nkeys; i++)
+        if (!strcmp(c->keys[i], K_CTRL_E)) c->keys[i][0] = 'e';
+}
+
 void kcase_free(kcase *c) {
     for (int i = 0; i < c->nkeys; i++) free(c->keys[i]);
     free(c->keys);
