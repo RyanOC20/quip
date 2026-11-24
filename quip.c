@@ -106,14 +106,14 @@
 #define HL_NESTED_COMMENTS   (1<<2) /* Block comments nest, as in OCaml. */
 #define HL_MULTILINE_STRINGS (1<<3) /* "..." strings may span rows. */
 #define HL_QUOTED_STRINGS    (1<<4) /* OCaml {id|...|id} strings. */
-#define HL_PRIME_QUOTES      (1<<5) /* ' opens a char literal only when one
-                                       fits; otherwise it is a type variable
-                                       ('a) or an identifier prime (x'). */
-#define HL_WORD_START_COMMENTS (1<<6) /* A line comment starts only at the
-                                         start of a word, as # in shell. */
-#define HL_TRIPLE_QUOTES     (1<<7) /* """...""" and '''...''' strings, which
-                                       may span rows (Python docstrings,
-                                       Java text blocks). */
+/* ' opens a char literal only when one fits; otherwise it is a type
+ * variable ('a) or an identifier prime (x'). */
+#define HL_PRIME_QUOTES      (1<<5)
+/* A line comment starts only at the start of a word, as # in shell. */
+#define HL_WORD_START_COMMENTS (1<<6)
+/* """...""" and '''...''' strings, which may span rows (Python docstrings,
+ * Java text blocks). */
+#define HL_TRIPLE_QUOTES     (1<<7)
 
 /* Lexer state at the end of a row, carried into the next row. The low byte
  * is the kind; the rest is an argument: the comment nesting depth, the
@@ -320,25 +320,27 @@ void editorSetStatusMessage(const char *fmt, ...);
 /* C / C++, built in so that quip works without any language files. */
 char *C_HL_extensions[] = {".c",".h",".cpp",".hpp",".cc",NULL};
 char *C_HL_filenames[] = {NULL};
+// clang-format off
 char *C_HL_keywords[] = {
-	/* C Keywords */
-	"auto","break","case","continue","default","do","else","enum",
-	"extern","for","goto","if","register","return","sizeof","static",
-	"struct","switch","typedef","union","volatile","while","NULL",
+    /* C Keywords */
+    "auto", "break", "case", "continue", "default", "do", "else", "enum",
+    "extern", "for", "goto", "if", "register", "return", "sizeof", "static",
+    "struct", "switch", "typedef", "union", "volatile", "while", "NULL",
 
-	/* C++ Keywords */
-	"alignas","alignof","and","and_eq","asm","bitand","bitor","class",
-	"compl","constexpr","const_cast","decltype","delete","dynamic_cast",
-	"explicit","export","false","friend","inline","mutable","namespace",
-	"new","noexcept","not","not_eq","nullptr","operator","or","or_eq",
-	"private","protected","public","reinterpret_cast","static_assert",
-	"static_cast","template","this","thread_local","throw","true","try",
-	"typeid","typename","virtual","xor","xor_eq",
+    /* C++ Keywords */
+    "alignas", "alignof", "and", "and_eq", "asm", "bitand", "bitor", "class",
+    "compl", "constexpr", "const_cast", "decltype", "delete", "dynamic_cast",
+    "explicit", "export", "false", "friend", "inline", "mutable", "namespace",
+    "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or", "or_eq",
+    "private", "protected", "public", "reinterpret_cast", "static_assert",
+    "static_cast", "template", "this", "thread_local", "throw", "true", "try",
+    "typeid", "typename", "virtual", "xor", "xor_eq",
 
-	/* C types */
-        "int|","long|","double|","float|","char|","unsigned|","signed|",
-        "void|","short|","auto|","const|","bool|",NULL
+    /* C types */
+    "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+    "void|", "short|", "auto|", "const|", "bool|", NULL
 };
+// clang-format on
 
 struct editorSyntax C_HL_builtin = {
     "c",
@@ -346,7 +348,7 @@ struct editorSyntax C_HL_builtin = {
     C_HL_filenames,
     C_HL_keywords,
     {"//",2},{"/*",2},{"*/",2},
-    HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
+    HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS,
 };
 
 /* Every known language, in match priority order (see above). */

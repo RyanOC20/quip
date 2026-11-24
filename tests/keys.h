@@ -25,8 +25,8 @@
 #define K_ALT_DOWN    "\x1b[1;3B"
 #define K_ALT_RIGHT   "\x1b[1;3C"
 #define K_ALT_LEFT    "\x1b[1;3D"
-#define K_META_B      "\x1b" "b"  /* Alt+Left in terminals sending ESC b. */
-#define K_META_F      "\x1b" "f"
+#define K_META_B      "\033b" /* ESC b: Alt+Left in terminals that send it. */
+#define K_META_F      "\033f" /* ESC f: Alt+Right. */
 #define K_SHIFT_ALT_RIGHT "\x1b[1;4C"
 #define K_SHIFT_ALT_LEFT  "\x1b[1;4D"
 #define K_CTRL_UP     "\x1b[1;5A"

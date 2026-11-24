@@ -35,6 +35,7 @@ static const struct { const char *file, *content; } starts[] = {
     {"lines.txt", NULL}, /* numbered lines, filled in below */
 };
 
+// clang-format off: grouped by kind
 static const char *const keys[] = {
     K_UP, K_DOWN, K_LEFT, K_RIGHT, K_UP, K_DOWN, K_LEFT, K_RIGHT,
     K_HOME, K_END, K_PGUP, K_PGDN, K_DEL, K_BACKSPACE, K_BACKSPACE,
@@ -49,6 +50,7 @@ static const char *const keys[] = {
     "\x07", "\x04", "\x15", /* unbound Ctrl keys */
     "\xc3\xa9", "\xe6\x97\xa5", /* UTF-8 characters, sent whole */
 };
+// clang-format on
 
 static char *dupkey(const char *s, int len) {
     char *k = malloc(len + 1);
