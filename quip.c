@@ -2607,12 +2607,18 @@ void editorToggleLineComment(int filerow) {
         indent++;
 
     if (scs->len) {
+        /* "// " with one space of padding, taken away again on uncomment.
+         * An empty line gets no padding, which would be trailing space. */
         if (hlAt(row->chars,indent,row->size,scs)) {
-            editorRowDelRange(row,indent,scs->len);
-            col = editorColAfterDel(col,indent,scs->len);
+            int n = scs->len;
+            if (indent+n < row->size && row->chars[indent+n] == ' ') n++;
+            editorRowDelRange(row,indent,n);
+            col = editorColAfterDel(col,indent,n);
         } else {
+            int pad = indent < row->size;
+            if (pad) editorRowInsRange(row,indent," ",1);
             editorRowInsRange(row,indent,scs->s,scs->len);
-            if (col >= indent) col += scs->len;
+            if (col >= indent) col += scs->len+pad;
         }
     } else {
         int end = row->size;

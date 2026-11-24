@@ -94,20 +94,54 @@ TEST(shift_tab_outdents) {
 TEST(toggle_line_comment_c) {
     quip *q = qstart("a.c", "int x;\n    int y;\n");
     qkey(q, K_CTRL_SLASH);
-    CHECK_STR(qline(q, 1), "//int x;");
+    CHECK_STR(qline(q, 1), "// int x;");
     qkey(q, K_CTRL_SLASH);
     CHECK_STR(qline(q, 1), "int x;");
     qkey(q, K_DOWN);
     qkey(q, K_CTRL_SLASH);
-    CHECK_STR(qline(q, 2), "    //int y;");
-    check_saved(q, "a.c", "int x;\n    //int y;\n");
+    CHECK_STR(qline(q, 2), "    // int y;");
+    check_saved(q, "a.c", "int x;\n    // int y;\n");
     qquit(q);
 }
 
 TEST(toggle_line_comment_python) {
     quip *q = qstart("a.py", "x = 1\n");
     qkey(q, K_CTRL_SLASH);
-    CHECK_STR(qline(q, 1), "#x = 1");
+    CHECK_STR(qline(q, 1), "# x = 1");
+    qquit(q);
+}
+
+TEST(toggle_line_comment_keeps_cursor_on_its_character) {
+    quip *q = qstart("a.c", "  int x;\n");
+    qkey(q, K_END);
+    qkey(q, K_LEFT); /* on ';' */
+    qkey(q, K_CTRL_SLASH);
+    CHECK_STR(qline(q, 1), "  // int x;");
+    CHECK_INT(q->scr.x, 4 + 10);
+    qkey(q, K_CTRL_SLASH);
+    CHECK_INT(q->scr.x, 4 + 7);
+    qquit(q);
+}
+
+TEST(uncomment_without_space) {
+    quip *q = qstart("a.c", "//int x;\n//  y;\n");
+    qkey(q, K_CTRL_SLASH);
+    CHECK_STR(qline(q, 1), "int x;");
+    /* Only one space of padding goes with the delimiter. */
+    qkey(q, K_DOWN);
+    qkey(q, K_CTRL_SLASH);
+    CHECK_STR(qline(q, 2), " y;");
+    qquit(q);
+}
+
+TEST(comment_empty_line_leaves_no_trailing_space) {
+    quip *q = qstart("a.c", "\n");
+    qkey(q, K_CTRL_SLASH);
+    CHECK_STR(qline(q, 1), "//");
+    qkey(q, K_CTRL_S);
+    char *saved = qread(q, "a.c", NULL);
+    CHECK_STR(saved, "//\n");
+    free(saved);
     qquit(q);
 }
 
