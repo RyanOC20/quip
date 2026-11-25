@@ -113,6 +113,28 @@ static int readByte(int fd, char *c) {
     return n == 1;
 }
 
+/* The key for a mouse report: button code 'b' (the low two bits name the
+ * button, 4/8/16 are Shift/Alt/Ctrl, 32 means motion, 64 the wheel) at the
+ * 0-based cell (x,y). 'release' is set for a button release. */
+static int editorMouseKey(int b, int x, int y, int release) {
+    if (b & 64) {
+        /* Wheel: bits 0-1 give up/down/left/right. Shift turns a vertical
+         * wheel into a horizontal one, for mice without a tilt wheel. */
+        int dir = b & 3;
+        if ((b & 4) && dir < 2) dir += 2;
+        if (dir == 0) return SCROLL_UP;
+        if (dir == 1) return SCROLL_DOWN;
+        if (dir == 2) return SCROLL_LEFT;
+        return SCROLL_RIGHT;
+    }
+    E.mouse_cx = x;
+    E.mouse_cy = y;
+    if (release) return MOUSE_RELEASE;
+    if (b == 0) return MOUSE_CLICK; /* left press */
+    if (b == 32) return MOUSE_DRAG; /* motion, left held */
+    return KEY_NULL;
+}
+
 /* Having read byte 'c', read the rest of the UTF-8 character it starts.
  * Returns KEY_CHAR plus the code point, or 'c' alone when it does not start a
  * valid sequence; the bytes read after it then come back as keys of their
@@ -247,28 +269,33 @@ int editorReadKey(int fd) {
                     case 'F': return END_KEY;
                     case 'Z': return SHIFT_TAB;
                     case 'M': {
+                        /* X10 mouse report: button, column and row, each
+                         * a byte, plus 32, columns and rows from 1. */
                         if (!readByte(fd, seq + 2)) return ESC;
                         if (!readByte(fd, seq + 3)) return ESC;
                         if (!readByte(fd, seq + 4)) return ESC;
-                        unsigned char mbtn = (unsigned char)seq[2];
-                        int b = mbtn - 32;
-                        if (b & 64) {
-                            /* Wheel: bits 0-1 give up/down/left/right. Shift
-                             * turns a vertical wheel into a horizontal one,
-                             * for mice without a tilt wheel. */
-                            int dir = b & 3;
-                            if ((b & 4) && dir < 2) dir += 2;
-                            if (dir == 0) return SCROLL_UP;
-                            if (dir == 1) return SCROLL_DOWN;
-                            if (dir == 2) return SCROLL_LEFT;
-                            return SCROLL_RIGHT;
+                        int b = (unsigned char)seq[2] - 32;
+                        return editorMouseKey(b, (unsigned char)seq[3] - 33,
+                                              (unsigned char)seq[4] - 33, b == 3);
+                    }
+                    case '<': {
+                        /* SGR mouse report: ESC [ < button ; column ; row,
+                         * then M for a press or motion, m for a release. */
+                        int v[3] = {0, 0, 0}, k = 0;
+                        char ch;
+                        for (;;) {
+                            if (!readByte(fd, &ch)) return ESC;
+                            if (ch >= '0' && ch <= '9') {
+                                if (v[k] < 100000) v[k] = v[k] * 10 + (ch - '0');
+                            } else if (ch == ';' && k < 2) {
+                                k++;
+                            } else {
+                                break;
+                            }
                         }
-                        E.mouse_cx = (unsigned char)seq[3] - 33;
-                        E.mouse_cy = (unsigned char)seq[4] - 33;
-                        if (mbtn == 32) return MOUSE_CLICK;   /* left press */
-                        if (mbtn == 35) return MOUSE_RELEASE; /* any release */
-                        if (mbtn == 64) return MOUSE_DRAG;    /* motion, left held */
-                        return KEY_NULL;
+                        if (k != 2 || (ch != 'M' && ch != 'm')) return KEY_NULL;
+                        if (ch == 'm' && v[0] != 0) return KEY_NULL; /* not the left button */
+                        return editorMouseKey(v[0], v[1] - 1, v[2] - 1, ch == 'm');
                     }
                     }
                 }

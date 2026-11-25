@@ -27,8 +27,10 @@ int writeAll(int fd, const void *buf, size_t len);
 #define VT_QUERY_CURSOR    "\x1b[6n"            /* Reply: ESC [ row ; col R */
 #define VT_ALT_SCREEN_ON   "\x1b[?1049h"
 #define VT_ALT_SCREEN_OFF  "\x1b[?1049l"
-#define VT_MOUSE_ON        "\x1b[?1002h" /* Button-event mouse reporting. */
-#define VT_MOUSE_OFF       "\x1b[?1002l"
+/* Button-event mouse reporting, in the SGR encoding where the terminal has
+ * it, which has no limit on coordinates (X10 stops at 223). */
+#define VT_MOUSE_ON        "\x1b[?1002h\x1b[?1006h"
+#define VT_MOUSE_OFF       "\x1b[?1006l\x1b[?1002l"
 #define VT_CLIPBOARD_QUERY "\x1b]52;c;?\x07" /* OSC 52 clipboard read. */
 
 /* Text attributes (SGR). */

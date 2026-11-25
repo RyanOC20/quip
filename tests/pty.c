@@ -346,9 +346,24 @@ void qtype(quip *q, const char *text) {
     free(buf);
 }
 
+/* A mouse event as a terminal reports it: in the SGR encoding,
+ * ESC [ < button ; col ; row M (m for a release), once quip has asked for
+ * it with ?1006, else in the X10 encoding, a byte per coordinate, which
+ * cannot go past 223. */
 static void mouse(quip *q, int button, int row, int col) {
-    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col), (char)(32 + row)};
-    qsend(q, seq, 6, 1);
+    char seq[32];
+    int n;
+    if (q->scr.modes & MODE_MOUSE_SGR) {
+        int release = button == 3;
+        n = snprintf(seq, sizeof(seq), "\x1b[<%d;%d;%d%c", release ? 0 : button, col, row,
+                     release ? 'm' : 'M');
+    } else {
+        if (row > 223 || col > 223)
+            test_fail(__FILE__, __LINE__, "X10 mouse encoding cannot reach row %d col %d", row,
+                      col);
+        n = snprintf(seq, sizeof(seq), "\x1b[M%c%c%c", 32 + button, 32 + col, 32 + row);
+    }
+    qsend(q, seq, n, 1);
 }
 
 void qpress(quip *q, int row, int col) { mouse(q, 0, row, col); }
