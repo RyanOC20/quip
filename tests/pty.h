@@ -11,17 +11,21 @@
 
 #include "screen.h"
 
+struct quip;
 typedef struct qopts {
-    int rows, cols;           /* Terminal size; 24x80 when 0. */
-    int no_winsize;           /* Report a 0x0 window, as a broken terminal does. */
-    const char *const *argv;  /* Arguments after the program name; NULL means
-                                 just the file name given to qstart. */
-    const char *bin;          /* Binary to run; NULL means $QUIP_BIN. */
-    int no_wait;              /* Don't wait for the first frame. */
-    const char *const *files; /* Extra files to create first: name, content,
-                                 name, content, ..., NULL. */
-    int lenient;              /* Don't fail on output the screen model doesn't
-                                 know (differential runs compare raw bytes). */
+    int rows, cols;                /* Terminal size; 24x80 when 0. */
+    int no_winsize;                /* Report a 0x0 window, as a broken terminal does. */
+    const char *const *argv;       /* Arguments after the program name; NULL means
+                                      just the file name given to qstart. */
+    const char *bin;               /* Binary to run; NULL means $QUIP_BIN. */
+    int no_wait;                   /* Don't wait for the first frame. */
+    const char *const *files;      /* Extra files to create first: name, content,
+                                      name, content, ..., NULL. */
+    int lenient;                   /* Don't fail on output the screen model doesn't
+                                      know (differential runs compare raw bytes). */
+    long fsize_limit;              /* Largest file quip may write (RLIMIT_FSIZE); past it
+                                      the kernel sends SIGXFSZ. 0 for no limit. */
+    void (*setup)(struct quip *q); /* Called once the files exist, before quip starts. */
 } qopts;
 
 typedef struct quip {

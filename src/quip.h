@@ -37,13 +37,16 @@
 #define QUIP_TAB_STOP 2 /* Tab width; the Tab key inserts spaces up to it. */
 
 #ifdef __linux__
-#define _POSIX_C_SOURCE 200809L
+/* POSIX.1-2008 with the X/Open extensions, which glibc needs to declare
+ * realpath(). */
+#define _XOPEN_SOURCE 700
 #endif
 
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>

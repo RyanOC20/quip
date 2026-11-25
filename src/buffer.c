@@ -347,29 +347,121 @@ int editorOpen(char *filename) {
     return 0;
 }
 
-/* Save the current file on disk. Return 0 on success, 1 on error. */
-int editorSave(void) {
-    int len;
-    char *buf = editorRowsToString(&len);
-    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
-    if (fd == -1) goto writeerr;
+/* The file a save writes: 'path', or what it links to, so that the link
+ * stays a link. A link to a file not created yet names it as well. Stores
+ * the result in 'out' (PATH_MAX bytes). */
+static void editorSaveTarget(const char *path, char *out) {
+    if (realpath(path, out)) return;
+    char link[PATH_MAX];
+    ssize_t n = readlink(path, link, sizeof(link) - 1);
+    const char *slash = strrchr(path, '/');
+    size_t dirlen = (n > 0 && link[0] != '/' && slash) ? (size_t)(slash - path + 1) : 0;
+    if (n <= 0 || dirlen + (size_t)n >= PATH_MAX) {
+        snprintf(out, PATH_MAX, "%s", path);
+        return;
+    }
+    /* A relative link is relative to the directory the link is in. */
+    memcpy(out, path, dirlen);
+    memcpy(out + dirlen, link, (size_t)n);
+    out[dirlen + n] = '\0';
+}
 
-    /* Set the final size first, then write the whole buffer, to make saving
-     * a bit safer, under the limits of what we can do in a small editor. */
-    if (ftruncate(fd, len) == -1) goto writeerr;
-    if (writeAll(fd, buf, len) == -1) goto writeerr;
+/* Rewrite the file at 'path' where it is. Writing first and cutting to size
+ * after means a failure never leaves less of the file than before, but it
+ * may leave a mix of old and new text. Returns 0 or an errno value. */
+static int editorWriteInPlace(const char *path, const char *buf, int len, int regular) {
+    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    if (fd == -1) return errno;
+    if (writeAll(fd, buf, len) == -1 ||
+        (regular && (ftruncate(fd, len) == -1 || fsync(fd) == -1))) {
+        int err = errno;
+        close(fd);
+        return err;
+    }
+    return close(fd) == -1 ? errno : 0;
+}
 
-    close(fd);
-    free(buf);
-    E.dirty = 0;
-    editorSetStatusMessage("%d bytes written on disk", len);
+/* Write the text to a new file next to the old one, then rename it over the
+ * old one. The rename is atomic, so whatever happens on the way (a full
+ * disk, a crash, a kill), the file holds either all of the old text or all
+ * of the new. The new file gets the old one's mode and owner. When that
+ * cannot work, the file is rewritten in place and *inplace set: a directory
+ * quip may not create files in, a file with other hard links, which would
+ * keep the old text, an owner quip cannot give the new file, or something
+ * other than a regular file. Returns 0 or an errno value. */
+static int editorWriteFile(const char *path, const char *buf, int len, int *inplace) {
+    char target[PATH_MAX];
+    editorSaveTarget(path, target);
+    struct stat st;
+    int exists = stat(target, &st) == 0;
+    *inplace = 0;
+    if (exists && S_ISDIR(st.st_mode)) return EISDIR;
+    if (exists && (!S_ISREG(st.st_mode) || st.st_nlink > 1)) goto in_place;
+
+    /* ".name.XXXXXX" in the same directory: rename only works within one
+     * file system, and the dot keeps it out of listings meanwhile. */
+    char tmp[PATH_MAX + 16];
+    const char *slash = strrchr(target, '/');
+    const char *base = slash ? slash + 1 : target;
+    int dirlen = slash ? (int)(slash - target + 1) : 0;
+    snprintf(tmp, sizeof(tmp), "%.*s.%s.XXXXXX", dirlen, target, base);
+    int fd = mkstemp(tmp);
+    if (fd == -1) goto in_place;
+
+    mode_t mode;
+    if (exists) {
+        mode = st.st_mode & 07777;
+    } else {
+        mode_t mask = umask(0);
+        umask(mask);
+        mode = 0644 & ~mask;
+    }
+    struct stat tst;
+    if (exists && fstat(fd, &tst) == 0 && (tst.st_uid != st.st_uid || tst.st_gid != st.st_gid) &&
+        fchown(fd, st.st_uid, st.st_gid) == -1) {
+        close(fd);
+        unlink(tmp);
+        goto in_place;
+    }
+    if (fchmod(fd, mode) == -1 || writeAll(fd, buf, len) == -1 || fsync(fd) == -1) {
+        int err = errno;
+        close(fd);
+        unlink(tmp);
+        return err;
+    }
+    if (close(fd) == -1 || rename(tmp, target) == -1) {
+        int err = errno;
+        unlink(tmp);
+        return err;
+    }
+    /* Make the rename itself durable. */
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%.*s", dirlen ? dirlen : 1, dirlen ? target : ".");
+    int dfd = open(dir, O_RDONLY);
+    if (dfd != -1) {
+        fsync(dfd);
+        close(dfd);
+    }
     return 0;
 
-writeerr:
+in_place:
+    *inplace = 1;
+    return editorWriteInPlace(target, buf, len, !exists || S_ISREG(st.st_mode));
+}
+
+/* Save the current file on disk. Return 0 on success, 1 on error. */
+int editorSave(void) {
+    int len, inplace;
+    char *buf = editorRowsToString(&len);
+    int err = editorWriteFile(E.filename, buf, len, &inplace);
     free(buf);
-    if (fd != -1) close(fd);
-    editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
-    return 1;
+    if (err) {
+        editorSetStatusMessage("Can't save! I/O error: %s", strerror(err));
+        return 1;
+    }
+    E.dirty = 0;
+    editorSetStatusMessage("%d bytes written %s", len, inplace ? "in place" : "on disk");
+    return 0;
 }
 
 /* Free every row buffer and reset the row array to empty. */

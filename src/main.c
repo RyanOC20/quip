@@ -73,6 +73,9 @@ static void initEditor(void) {
     E.ft_scroll = 0;
     updateWindowSize();
     editorWatchResize();
+    /* A save past the file size limit fails with EFBIG and is reported,
+     * instead of killing quip half way through the write. */
+    signal(SIGXFSZ, SIG_IGN);
 }
 
 int main(int argc, char **argv) {

@@ -148,6 +148,7 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     mkdirs(q->dir);
     if (content) qwrite(q, file, content);
     for (int i = 0; o->files && o->files[i]; i += 2) qwrite(q, o->files[i], o->files[i + 1]);
+    if (o->setup) o->setup(q);
     const char *t = getenv("QUIP_FRAME_TIMEOUT_MS");
     q->timeout_ms = t ? atoi(t) : 10000;
     q->lenient = o->lenient;
@@ -200,6 +201,10 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
         if (s > 2) close(s);
         close(q->fd);
         if (chdir(q->dir) == -1) _exit(126);
+        if (o->fsize_limit) {
+            struct rlimit rl = {(rlim_t)o->fsize_limit, (rlim_t)o->fsize_limit};
+            setrlimit(RLIMIT_FSIZE, &rl);
+        }
         set_env(q->dir);
         execv(bin, (char *const *)argv);
         _exit(127);
