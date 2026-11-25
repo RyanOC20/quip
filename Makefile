@@ -9,6 +9,9 @@ CFLAGS ?= -Os
 # Warnings are part of the build, not of CFLAGS, so overriding CFLAGS keeps
 # them. CI adds WERROR=-Werror.
 WARN = -std=c99 -Wall -Wextra -pedantic $(WERROR)
+# quip is a program, not a library: nothing outside it needs its symbols,
+# and hidden ones are addressed directly instead of through the GOT.
+CODEGEN = -fvisibility=hidden
 JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 # The version is "git describe" in a checkout (v0.1.0, v0.1.0-3-gabc1234,
@@ -17,7 +20,8 @@ JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 VERSION_DEF = $(if $(VERSION),-DQUIP_VERSION='"$(VERSION)"')
 
-SRC = $(wildcard src/*.c)
+# The modules; src/all.c includes them all for the release build.
+SRC = $(filter-out src/all.c,$(wildcard src/*.c))
 HDR = $(wildcard src/*.h)
 
 all: quip
@@ -26,17 +30,22 @@ all: quip
 	@mkdir -p .build
 	@if [ "$$(cat $@ 2>/dev/null)" != "$(VERSION)" ]; then echo "$(VERSION)" > $@; fi
 
-quip: $(SRC) $(HDR) .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) $(CFLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
+# One translation unit, see src/all.c.
+quip: src/all.c $(SRC) $(HDR) .build/version
+	@for m in $(notdir $(SRC)); do \
+	  grep -q "^#include \"$$m\"" src/all.c || { echo "src/all.c does not include $$m" >&2; exit 1; }; \
+	done
+	$(CC) $(WARN) $(CODEGEN) $(CPPFLAGS) $(VERSION_DEF) $(CFLAGS) $(LDFLAGS) -o $@ src/all.c $(LDLIBS)
 
-# For a debugger: no optimization, full debug info.
+# For a debugger: no optimization, full debug info. The modules are compiled
+# separately here and in quip-asan.
 quip-debug: $(SRC) $(HDR) .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O0 -g $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
+	$(CC) $(WARN) $(CODEGEN) $(CPPFLAGS) $(VERSION_DEF) -O0 -g $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 # AddressSanitizer and UndefinedBehaviorSanitizer.
 SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 quip-asan: $(SRC) $(HDR) .build/version
-	$(CC) $(WARN) $(CPPFLAGS) $(VERSION_DEF) -O1 -g $(SAN_FLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
+	$(CC) $(WARN) $(CODEGEN) $(CPPFLAGS) $(VERSION_DEF) -O1 -g $(SAN_FLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 debug: quip-debug
 asan: quip-asan
@@ -117,7 +126,7 @@ bench: quip bench/bench
 # ------------------------------------------------------------------ Style
 
 CLANG_FORMAT ?= clang-format
-FORMAT_SRC = $(SRC) $(HDR) $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c)
+FORMAT_SRC = $(SRC) src/all.c $(HDR) $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c)
 
 format:
 	$(CLANG_FORMAT) -i $(FORMAT_SRC)

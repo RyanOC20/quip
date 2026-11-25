@@ -25,7 +25,7 @@ Layout
 | `tests/` | The test harness and the end-to-end tests (`tests/e2e/`) |
 | `bench/` | The benchmark |
 
-A function used by one module only is `static`. Anything another module needs is declared in `quip.h`.
+A function used by one module only is `static`. Anything another module needs is declared in `quip.h`. A new module also goes in `src/all.c`: the release build compiles every module as one unit, so the compiler can optimize across them, and the build fails if one is missing.
 
 Workflow
 ---
