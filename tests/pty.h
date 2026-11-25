@@ -15,6 +15,7 @@ struct quip;
 typedef struct qopts {
     int rows, cols;                /* Terminal size; 24x80 when 0. */
     int no_winsize;                /* Report a 0x0 window, as a broken terminal does. */
+    int no_cursor_reply;           /* Don't answer cursor position queries (ESC [6n). */
     const char *const *argv;       /* Arguments after the program name; NULL means
                                       just the file name given to qstart. */
     const char *bin;               /* Binary to run; NULL means $QUIP_BIN. */

@@ -157,7 +157,7 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     screen_init(&q->scr, rows, cols);
     q->scr.reply = reply;
     q->scr.reply_ctx = q;
-    q->scr.answer_cursor = 1;
+    q->scr.answer_cursor = !o->no_cursor_reply;
     q->scr.answer_clipboard = 1;
 
     q->fd = posix_openpt(O_RDWR | O_NOCTTY);

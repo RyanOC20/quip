@@ -84,6 +84,12 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
+    /* Raw mode first: without a window size from the kernel, quip asks the
+     * terminal, whose answer only arrives byte by byte in raw mode. */
+    if (enableRawMode(STDIN_FILENO) == -1) {
+        fprintf(stderr, "quip: standard input is not a terminal\n");
+        exit(1);
+    }
     initEditor();
     editorLoadLanguages(argv[0]);
     editorSelectSyntaxHighlight(argv[1]);
@@ -91,7 +97,6 @@ int main(int argc, char **argv) {
     editorPushSnapshot();
     editorUndoMarkSaved();
     E.dirty = 0;
-    enableRawMode(STDIN_FILENO);
     if (hl_load_errors > 1)
         editorSetStatusMessage("%s (+%d more)", hl_load_error, hl_load_errors - 1);
     else

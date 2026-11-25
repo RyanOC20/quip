@@ -365,8 +365,12 @@ int readByteTimeout(unsigned char *ch, int ms) {
 }
 
 void updateWindowSize(void) {
-    if (getWindowSize(STDIN_FILENO, STDOUT_FILENO, &E.screenrows, &E.termcols) == -1) {
-        editorDie("Unable to query the screen for size (columns / rows)", errno);
+    /* A terminal that neither reports its size nor answers is assumed to be
+     * 80x24 until a resize says otherwise. */
+    if (getWindowSize(STDIN_FILENO, STDOUT_FILENO, &E.screenrows, &E.termcols) == -1 ||
+        E.screenrows < 1 || E.termcols < 1) {
+        E.screenrows = 24;
+        E.termcols = 80;
     }
     E.screenrows -= 2;      /* Get room for status bar. */
     editorUpdateGeometry(); /* Reserve columns for the sidebar and gutter. */

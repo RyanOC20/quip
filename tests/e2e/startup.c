@@ -76,3 +76,27 @@ TEST(bad_language_file_is_reported) {
     CHECK(strstr(qmessage(q), "bad.lang") != NULL);
     qquit(q);
 }
+
+TEST(no_window_size_asks_the_terminal) {
+    /* A terminal that reports a 0x0 window: quip finds the size by moving
+     * the cursor to the far corner and asking where it went. */
+    qopts o = {.rows = 20, .cols = 60, .no_winsize = 1};
+    quip *q = qstart_opts("a.txt", "hello\n", &o);
+    CHECK_STR(qline(q, 1), "hello");
+    CHECK(strncmp(qrow(q, 19), "a.txt - 1 line", 14) == 0);
+    CHECK_INT(qcell(q, 19, 60)->cp, '1');
+    qquit(q);
+}
+
+TEST(no_window_size_and_no_answer_assumes_80x24) {
+    /* Nor does it answer: quip waits briefly, then assumes 80x24 until the
+     * terminal says otherwise. */
+    qopts o = {.rows = 24, .cols = 80, .no_winsize = 1, .no_cursor_reply = 1};
+    quip *q = qstart_opts("a.txt", "hello\n", &o);
+    CHECK_STR(qline(q, 1), "hello");
+    CHECK(strncmp(qrow(q, 23), "a.txt - 1 line", 14) == 0);
+    CHECK_INT(qcell(q, 23, 80)->cp, '1');
+    qresize(q, 20, 60);
+    CHECK(strncmp(qrow(q, 19), "a.txt - 1 line", 14) == 0);
+    qquit(q);
+}
