@@ -217,9 +217,9 @@ static void undo_redo_property(uint32_t first, uint32_t last) {
         } while (strcmp(qmessage(q), "Nothing to undo.") && ++steps < 300);
         char *start = save_text(q, c.file);
         CHECK_STR(start, c.content ? c.content : "");
-        do {
-            qkey(q, K_CTRL_Y);
-        } while (strcmp(qmessage(q), "Nothing to redo.") && --steps > -300);
+        /* As many redos as undos: the session may itself end with an undo,
+         * and redoing that too would go past the final text. */
+        for (int i = 0; i < steps; i++) qkey(q, K_CTRL_Y);
         char *again = save_text(q, c.file);
         if (strcmp(again, final)) printf("seed %u\n", seed);
         CHECK_STR(again, final);
