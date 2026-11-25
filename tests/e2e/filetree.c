@@ -58,8 +58,7 @@ TEST(tree_expand_collapse_and_open) {
     qkey(q, K_DOWN);
     qkey(q, K_ENTER); /* open src/lib.c */
     CHECK(strstr(qrow(q, 1), "|  1 lib") != NULL);
-    CHECK(strncmp(qstatus(q) + 30, "lib.c", 5) == 0 ||
-          strstr(qstatus(q), "src/lib.c") != NULL);
+    CHECK(strncmp(qstatus(q) + 30, "lib.c", 5) == 0 || strstr(qstatus(q), "src/lib.c") != NULL);
     /* Focus is back in the editor: typing edits the new file. */
     qtype(q, "x");
     qkey(q, K_CTRL_S);

@@ -10,10 +10,10 @@
 
 typedef struct kcase {
     uint32_t seed;
-    const char *file;     /* File name; its extension picks the language. */
-    const char *content;  /* Starting content. */
+    const char *file;    /* File name; its extension picks the language. */
+    const char *content; /* Starting content. */
     int rows, cols;
-    char **keys;          /* Each a key's bytes (NUL terminated). */
+    char **keys; /* Each a key's bytes (NUL terminated). */
     int nkeys;
 } kcase;
 

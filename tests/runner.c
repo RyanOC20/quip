@@ -66,12 +66,12 @@ static void print_file(const char *path) {
 
 static int start_test(running *r, int idx, const char *base) {
     r->idx = idx;
-    snprintf(r->dir, sizeof(r->dir), "%s/%s", base, tests[idx].name);
+    path_fmt(r->dir, sizeof(r->dir), "%s/%s", base, tests[idx].name);
     if (mkdir(r->dir, 0700) == -1) {
         perror(r->dir);
         return -1;
     }
-    snprintf(r->log, sizeof(r->log), "%s.log", r->dir);
+    path_fmt(r->log, sizeof(r->log), "%s.log", r->dir);
     gettimeofday(&r->start, NULL);
     fflush(stdout);
     r->pid = fork();
@@ -107,8 +107,7 @@ static double elapsed(const struct timeval *t0) {
 static int finish_test(running *r, int status) {
     int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
     const test *t = &tests[r->idx];
-    printf("%s %-40s %s %.2fs\n", ok ? "PASS" : "FAIL", t->name, t->file,
-           elapsed(&r->start));
+    printf("%s %-40s %s %.2fs\n", ok ? "PASS" : "FAIL", t->name, t->file, elapsed(&r->start));
     if (!ok) {
         if (WIFSIGNALED(status))
             printf("  killed by signal %d%s\n", WTERMSIG(status),
@@ -140,11 +139,16 @@ int main(int argc, char **argv) {
     int nfilters = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-j") && i + 1 < argc) jobs = atoi(argv[++i]);
-        else if (!strncmp(argv[i], "-j", 2) && argv[i][2]) jobs = atoi(argv[i] + 2);
-        else if (!strcmp(argv[i], "-v")) verbose = 1;
-        else if (!strcmp(argv[i], "-l")) list = 1;
-        else if (!strcmp(argv[i], "-k")) keep_dirs = 1;
+        if (!strcmp(argv[i], "-j") && i + 1 < argc)
+            jobs = atoi(argv[++i]);
+        else if (!strncmp(argv[i], "-j", 2) && argv[i][2])
+            jobs = atoi(argv[i] + 2);
+        else if (!strcmp(argv[i], "-v"))
+            verbose = 1;
+        else if (!strcmp(argv[i], "-l"))
+            list = 1;
+        else if (!strcmp(argv[i], "-k"))
+            keep_dirs = 1;
         else {
             filters = argv + i;
             nfilters = argc - i;
@@ -159,8 +163,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < ntests; i++) {
         int want = nfilters == 0;
         for (int f = 0; f < nfilters; f++)
-            if (strstr(tests[i].name, filters[f]) || strstr(tests[i].file, filters[f]))
-                want = 1;
+            if (strstr(tests[i].name, filters[f]) || strstr(tests[i].file, filters[f])) want = 1;
         if (want) selected[nsel++] = i;
     }
     if (list) {
@@ -175,7 +178,7 @@ int main(int argc, char **argv) {
 
     const char *tmp = getenv("TMPDIR");
     char base[PATH_MAX];
-    snprintf(base, sizeof(base), "%s/quip-tests-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-tests-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 1;
@@ -201,8 +204,10 @@ int main(int argc, char **argv) {
         }
         for (int s = 0; s < jobs; s++) {
             if (run[s].pid == pid) {
-                if (finish_test(&run[s], status)) passed++;
-                else failed++;
+                if (finish_test(&run[s], status))
+                    passed++;
+                else
+                    failed++;
                 run[s].pid = 0;
                 active--;
                 break;

@@ -1,0 +1,20 @@
+# quip's C style: 4-space indent, braces on the same line, 100 columns.
+# "make format" applies it and "make check-format" (run by CI) checks it.
+# Hand-laid-out tables sit between "// clang-format off" and "on".
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+IndentCaseLabels: false
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Empty
+AlignConsecutiveMacros:
+  Enabled: true
+  AcrossComments: true
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+IncludeBlocks: Preserve

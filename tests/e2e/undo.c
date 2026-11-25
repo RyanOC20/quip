@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "../keygen.h"
 #include "../keys.h"
@@ -176,22 +177,20 @@ TEST(saved_state_tracks_undo_and_redo) {
 }
 
 TEST(failed_save_keeps_file_modified) {
-    quip *q = qstart("sub/a.txt", "x\n");
+    quip *q = qstart("a.txt", "x\n");
     qtype(q, "y");
-    /* Make the file read-only so the save fails. */
-    char path[1100];
-    snprintf(path, sizeof(path), "%s/sub/a.txt", q->dir);
-    CHECK(chmod(path, 0444) == 0);
+    /* Put a directory where the file was so the save fails, even for root,
+     * who may write read-only files. */
+    CHECK(unlink(qpath(q, "a.txt")) == 0);
+    CHECK(mkdir(qpath(q, "a.txt"), 0755) == 0);
     qkey(q, K_CTRL_S);
     CHECK(strstr(qmessage(q), "Can't save") != NULL);
     CHECK(modified(q));
-    /* The disk still holds "x\n": no state of the history matches it but
-     * the first. */
+    /* Nothing was saved: no state of the history is the saved one. */
     qkey(q, K_CTRL_Z);
     qkey(q, K_CTRL_Y);
     CHECK_STR(qline(q, 1), "yx");
     CHECK(modified(q));
-    chmod(path, 0644);
     qquit(q);
 }
 

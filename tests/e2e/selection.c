@@ -7,9 +7,7 @@
 #include "../test.h"
 
 /* Is screen cell (row, col) drawn in reverse video? 1-based. */
-static int rev(quip *q, int row, int col) {
-    return (qcell(q, row, col)->attr & ATTR_REVERSE) != 0;
-}
+static int rev(quip *q, int row, int col) { return (qcell(q, row, col)->attr & ATTR_REVERSE) != 0; }
 
 static void check_saved(quip *q, const char *name, const char *want) {
     qkey(q, K_CTRL_S);

@@ -15,19 +15,18 @@ static uint32_t next(uint32_t *s) {
     return *s;
 }
 
-static const struct { const char *file, *content; } starts[] = {
-    {"a.c",
-     "#include <stdio.h>\n/* block\n   comment */\nint main(void) {\n"
-     "\tchar *s = \"str\\\"ing\";  \n\tif (x[1] > 0x1F) { return 42; }\n"
-     "\t// line comment (\n}\n"},
-    {"a.py",
-     "def f(a, b):\n    \"\"\"Doc\n    string\"\"\"\n    return a + b  # sum\n"
-     "x = '''t'''\n"},
-    {"a.txt",
-     "plain text with trailing spaces   \ncaf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\n"
-     "\tindented\n"
-     "a long line abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz "
-     "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghij\n"},
+static const struct {
+    const char *file, *content;
+} starts[] = {
+    {"a.c", "#include <stdio.h>\n/* block\n   comment */\nint main(void) {\n"
+            "\tchar *s = \"str\\\"ing\";  \n\tif (x[1] > 0x1F) { return 42; }\n"
+            "\t// line comment (\n}\n"},
+    {"a.py", "def f(a, b):\n    \"\"\"Doc\n    string\"\"\"\n    return a + b  # sum\n"
+             "x = '''t'''\n"},
+    {"a.txt", "plain text with trailing spaces   \ncaf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\n"
+              "\tindented\n"
+              "a long line abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz "
+              "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghij\n"},
     {"new.txt", NULL},
     {"a.sh", "#!/bin/sh\necho \"$HOME\" # c\nx=${#arr}; [ -f a ] && echo 'q'\n"},
     {"a.ml", "let x = (* a (* b *) *) 1\nlet s = {id|q|id} and c = 'a'\n"},
@@ -35,6 +34,7 @@ static const struct { const char *file, *content; } starts[] = {
     {"lines.txt", NULL}, /* numbered lines, filled in below */
 };
 
+// clang-format off: grouped by kind
 static const char *const keys[] = {
     K_UP, K_DOWN, K_LEFT, K_RIGHT, K_UP, K_DOWN, K_LEFT, K_RIGHT,
     K_HOME, K_END, K_PGUP, K_PGDN, K_DEL, K_BACKSPACE, K_BACKSPACE,
@@ -49,6 +49,7 @@ static const char *const keys[] = {
     "\x07", "\x04", "\x15", /* unbound Ctrl keys */
     "\xc3\xa9", "\xe6\x97\xa5", /* UTF-8 characters, sent whole */
 };
+// clang-format on
 
 static char *dupkey(const char *s, int len) {
     char *k = malloc(len + 1);
@@ -64,8 +65,7 @@ static char *mouse_key(uint32_t *s, int rows, int cols) {
     int col = 1 + (int)(next(s) % (cols + 1));
     if (row > 223) row = 223;
     if (col > 223) col = 223;
-    char seq[6] = {'\x1b', '[', 'M', (char)(32 + b), (char)(32 + col),
-                   (char)(32 + row)};
+    char seq[6] = {'\x1b', '[', 'M', (char)(32 + b), (char)(32 + col), (char)(32 + row)};
     return dupkey(seq, 6);
 }
 
@@ -85,9 +85,16 @@ void kcase_make(kcase *c, uint32_t seed, int nkeys) {
         c->content = starts[pick].content ? strdup(starts[pick].content) : NULL;
     }
     int size = (int)(next(&s) % 10);
-    if (size < 6) { c->rows = 24; c->cols = 80; }
-    else if (size < 9) { c->rows = 3 + (int)(next(&s) % 10); c->cols = 5 + (int)(next(&s) % 50); }
-    else { c->rows = 40 + (int)(next(&s) % 20); c->cols = 100 + (int)(next(&s) % 100); }
+    if (size < 6) {
+        c->rows = 24;
+        c->cols = 80;
+    } else if (size < 9) {
+        c->rows = 3 + (int)(next(&s) % 10);
+        c->cols = 5 + (int)(next(&s) % 50);
+    } else {
+        c->rows = 40 + (int)(next(&s) % 20);
+        c->cols = 100 + (int)(next(&s) % 100);
+    }
 
     c->keys = malloc(sizeof(char *) * (nkeys > 0 ? nkeys : 1));
     int nk = (int)(sizeof(keys) / sizeof(keys[0]));
@@ -96,8 +103,7 @@ void kcase_make(kcase *c, uint32_t seed, int nkeys) {
         if (r < 40) {
             /* Printable text, weighted towards characters the lexers care
              * about. */
-            static const char text[] =
-                "abcxyz_ 019(){}[]\"'/*#\\|$`.,;:=+-<>!?&^";
+            static const char text[] = "abcxyz_ 019(){}[]\"'/*#\\|$`.,;:=+-<>!?&^";
             char ch = text[next(&s) % (sizeof(text) - 1)];
             c->keys[i] = dupkey(&ch, 1);
         } else if (r < 85) {
@@ -136,9 +142,7 @@ void kcase_subset(const kcase *c, const char *keep, kcase *out) {
 
 /* Frames quip draws for a key: one per key it reads, and it reads an
  * escape sequence as one key but anything else byte by byte. */
-static int key_frames(const char *k) {
-    return k[0] == '\x1b' ? 1 : (int)strlen(k);
-}
+static int key_frames(const char *k) { return k[0] == '\x1b' ? 1 : (int)strlen(k); }
 
 quip *kcase_run(const kcase *c, const qopts *base) {
     qopts o = base ? *base : (qopts){0};
@@ -153,11 +157,16 @@ quip *kcase_run(const kcase *c, const qopts *base) {
 static void print_c_string(const char *s) {
     putchar('"');
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '\n') fputs("\\n", stdout);
-        else if (*p == '\t') fputs("\\t", stdout);
-        else if (*p == '"' || *p == '\\') printf("\\%c", *p);
-        else if (*p < 0x20 || *p >= 0x7f) printf("\\%03o", *p);
-        else putchar(*p);
+        if (*p == '\n')
+            fputs("\\n", stdout);
+        else if (*p == '\t')
+            fputs("\\t", stdout);
+        else if (*p == '"' || *p == '\\')
+            printf("\\%c", *p);
+        else if (*p < 0x20 || *p >= 0x7f)
+            printf("\\%03o", *p);
+        else
+            putchar(*p);
     }
     putchar('"');
 }
@@ -166,8 +175,10 @@ void kcase_print_test(const kcase *c, const char *name) {
     printf("TEST(%s) {\n", name);
     printf("    qopts o = {.rows = %d, .cols = %d};\n", c->rows, c->cols);
     printf("    quip *q = qstart_opts(\"%s\", ", c->file);
-    if (c->content) print_c_string(c->content);
-    else fputs("NULL", stdout);
+    if (c->content)
+        print_c_string(c->content);
+    else
+        fputs("NULL", stdout);
     printf(", &o);\n");
     for (int i = 0; i < c->nkeys; i++) {
         const char *k = c->keys[i];

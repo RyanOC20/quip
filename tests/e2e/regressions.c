@@ -20,10 +20,12 @@ TEST(selection_anchored_past_line_end_then_typed_over) {
 
 TEST(selection_past_line_end_on_tiny_terminal) {
     qopts o = {.rows = 4, .cols = 5};
-    quip *q = qstart_opts("a.txt",
-        "plain text with trailing spaces   \ncaf\303\251 \346\227\245\346\234\254\n"
-        "\tindented\na long line abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz "
-        "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghij\n", &o);
+    quip *q =
+        qstart_opts("a.txt",
+                    "plain text with trailing spaces   \ncaf\303\251 \346\227\245\346\234\254\n"
+                    "\tindented\na long line abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz "
+                    "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghij\n",
+                    &o);
     qkey(q, K_ENTER);
     qkey(q, "^");
     qkey(q, "-");
@@ -55,8 +57,10 @@ TEST(left_at_top_of_scrolled_view) {
 
 TEST(fuzz_seed_678) {
     qopts o = {.rows = 3, .cols = 19};
-    quip *q = qstart_opts("a.py", "def f(a, b):\n    \"\"\"Doc\n    string\"\"\"\n"
-                          "    return a + b  # sum\nx = '''t'''\n", &o);
+    quip *q = qstart_opts("a.py",
+                          "def f(a, b):\n    \"\"\"Doc\n    string\"\"\"\n"
+                          "    return a + b  # sum\nx = '''t'''\n",
+                          &o);
     qkey(q, K_DOWN);
     qkey(q, ")");
     qkey(q, K_SHIFT_CTRL_LEFT);

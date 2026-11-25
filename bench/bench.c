@@ -33,8 +33,8 @@ static char *big_c(int lines) {
     size_t cap = (size_t)lines * 64 + 64, o = 0;
     char *buf = malloc(cap);
     for (int i = 0; i < lines; i++) {
-        o += snprintf(buf + o, cap - o,
-                      "int f%d(int x) { return x * %d; } // note %d\n", i, i % 97, i);
+        o += snprintf(buf + o, cap - o, "int f%d(int x) { return x * %d; } // note %d\n", i, i % 97,
+                      i);
     }
     return buf;
 }
@@ -42,7 +42,7 @@ static char *big_c(int lines) {
 typedef struct metric {
     const char *name, *unit;
     int lower_is_better;
-    double floor;   /* Differences below this are noise. */
+    double floor; /* Differences below this are noise. */
 } metric;
 
 enum { M_LOAD, M_SCROLL, M_TYPE, M_CASCADE, M_BRACKET, M_RSS, M_SIZE, NMETRICS };
@@ -56,17 +56,34 @@ static const metric metrics[NMETRICS] = {
     {"stripped binary", "bytes", 1, 0},
 };
 
-static char *file200k, *file12mb, *bracket12mb;
+/* The input files, written once before any run so writing them is never
+ * part of a timing. */
+static char path200k[PATH_MAX], path12mb[PATH_MAX], pathbracket[PATH_MAX];
+
+/* Start 'bin' on the file at 'path'. */
+static quip *open_file(const char *bin, const char *path) {
+    const char *argv[] = {path, NULL};
+    qopts o = {.bin = bin, .rows = 40, .cols = 120, .argv = argv};
+    return qstart_opts(NULL, NULL, &o);
+}
+
+static void write_file(char *path, const char *dir, const char *name, const char *s) {
+    path_fmt(path, PATH_MAX, "%s/%s", dir, name);
+    FILE *f = fopen(path, "w");
+    if (!f || fputs(s, f) == EOF || fclose(f) == EOF) {
+        perror(path);
+        exit(2);
+    }
+}
 
 /* One run of every measurement for 'bin'; results go to v[]. Runs in a
  * child process so the harness's failure exits stay contained. */
 static void measure_child(const char *bin, double *v) {
-    qopts o = {.bin = bin, .rows = 40, .cols = 120};
     quip *q;
     double t;
 
     t = now_ms();
-    q = qstart_opts("big.c", file200k, &o);
+    q = open_file(bin, path200k);
     v[M_LOAD] = now_ms() - t;
 
     /* Typing in the middle of a line: re-highlights one row. */
@@ -83,7 +100,7 @@ static void measure_child(const char *bin, double *v) {
     v[M_CASCADE] = now_ms() - t;
     qkill(q);
 
-    q = qstart_opts("big.c", file12mb, &o);
+    q = open_file(bin, path12mb);
     t = now_ms();
     for (int i = 0; i < 40; i++) qkey(q, K_PGDN);
     v[M_SCROLL] = (now_ms() - t) / 40;
@@ -94,7 +111,7 @@ static void measure_child(const char *bin, double *v) {
 
     /* A '{' that is never closed: each frame scans the whole file for its
      * partner. */
-    q = qstart_opts("br.c", bracket12mb, &o);
+    q = open_file(bin, pathbracket);
     t = now_ms();
     for (int i = 0; i < 10; i++) qkey(q, i % 2 ? K_LEFT : K_RIGHT);
     v[M_BRACKET] = (now_ms() - t) / 10;
@@ -103,7 +120,7 @@ static void measure_child(const char *bin, double *v) {
 
 static double binary_size(const char *bin, const char *dir) {
     char out[PATH_MAX];
-    snprintf(out, sizeof(out), "%s/stripped", dir);
+    path_fmt(out, sizeof(out), "%s/stripped", dir);
     pid_t pid = fork();
     if (pid == 0) {
         execlp("strip", "strip", "-o", out, bin, (char *)NULL);
@@ -137,8 +154,7 @@ static int measure(const char *bin, const char *dir, double *v) {
     close(p[0]);
     int st;
     waitpid(pid, &st, 0);
-    if (n != (ssize_t)(sizeof(double) * NMETRICS) || !WIFEXITED(st) ||
-        WEXITSTATUS(st) != 0) {
+    if (n != (ssize_t)(sizeof(double) * NMETRICS) || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
         fprintf(stderr, "benchmark run of %s failed\n", bin);
         return -1;
     }
@@ -161,10 +177,14 @@ int main(int argc, char **argv) {
     int nbins = 0, runs = 7;
     double pct = 10, size_pct = 15;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-r") && i + 1 < argc) runs = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-p") && i + 1 < argc) pct = atof(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) size_pct = atof(argv[++i]);
-        else if (nbins < 2) bins[nbins++] = argv[i];
+        if (!strcmp(argv[i], "-r") && i + 1 < argc)
+            runs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc)
+            pct = atof(argv[++i]);
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc)
+            size_pct = atof(argv[++i]);
+        else if (nbins < 2)
+            bins[nbins++] = argv[i];
     }
     if (nbins == 0 || runs < 1) {
         fprintf(stderr, "usage: %s BIN | OLD NEW [-r runs] [-p percent] [-s size_percent]\n",
@@ -182,18 +202,23 @@ int main(int argc, char **argv) {
 
     const char *tmp = getenv("TMPDIR");
     char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/quip-tests-bench-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(dir, sizeof(dir), "%s/quip-tests-bench-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(dir)) {
         perror("mkdtemp");
         return 2;
     }
-    file200k = big_c(200000);
-    file12mb = big_c(240000);
+    char *file200k = big_c(200000), *file12mb = big_c(240000);
     size_t blen = strlen(file12mb);
-    bracket12mb = malloc(blen + 3);
+    char *bracket12mb = malloc(blen + 3);
     bracket12mb[0] = '{';
     bracket12mb[1] = '\n';
     memcpy(bracket12mb + 2, file12mb, blen + 1);
+    write_file(path200k, dir, "big.c", file200k);
+    write_file(path12mb, dir, "big12.c", file12mb);
+    write_file(pathbracket, dir, "br.c", bracket12mb);
+    free(file200k);
+    free(file12mb);
+    free(bracket12mb);
 
     double *vals = calloc((size_t)nbins * runs * NMETRICS, sizeof(double));
     for (int r = 0; r < runs; r++) {
@@ -214,8 +239,7 @@ int main(int argc, char **argv) {
     double *col = malloc(sizeof(double) * runs);
     for (int b = 0; b < nbins; b++) {
         for (int m = 0; m < NMETRICS; m++) {
-            for (int r = 0; r < runs; r++)
-                col[r] = vals[((size_t)b * runs + r) * NMETRICS + m];
+            for (int r = 0; r < runs; r++) col[r] = vals[((size_t)b * runs + r) * NMETRICS + m];
             med[b][m] = median(col, runs);
         }
     }
@@ -233,8 +257,8 @@ int main(int argc, char **argv) {
             double limit = m == M_SIZE ? size_pct : pct;
             int bad = change > limit && (b - a) > metrics[m].floor;
             worse |= bad;
-            printf("%-36s %12.2f %12.2f %+7.1f%% %s%s\n", metrics[m].name, a, b,
-                   change, metrics[m].unit, bad ? "  <-- regression" : "");
+            printf("%-36s %12.2f %12.2f %+7.1f%% %s%s\n", metrics[m].name, a, b, change,
+                   metrics[m].unit, bad ? "  <-- regression" : "");
         }
     }
     return worse ? 1 : 0;

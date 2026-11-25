@@ -22,9 +22,9 @@
 
 typedef struct result {
     int ok;
-    char *out;      /* Terminal output. */
+    char *out; /* Terminal output. */
     size_t outlen;
-    char *file;     /* Saved file. */
+    char *file; /* Saved file. */
     int filelen;
     char *err;
 } result;
@@ -151,9 +151,12 @@ static void show_diff(const char *a, size_t alen, const char *b, size_t blen) {
         for (size_t j = from; j < len && j < i + 60; j++) {
             unsigned char ch = (unsigned char)s[j];
             if (j == i) fputs("[>]", stdout);
-            if (ch == 0x1b) fputs("\\e", stdout);
-            else if (ch < 0x20 || ch >= 0x7f) printf("\\x%02x", ch);
-            else putchar(ch);
+            if (ch == 0x1b)
+                fputs("\\e", stdout);
+            else if (ch < 0x20 || ch >= 0x7f)
+                printf("\\x%02x", ch);
+            else
+                putchar(ch);
         }
         putchar('\n');
     }
@@ -173,19 +176,22 @@ int main(int argc, char **argv) {
     int cases = 100, nkeys = 120;
     uint32_t first = 1;
     for (int i = 3; i < argc; i++) {
-        if (!strcmp(argv[i], "-n") && i + 1 < argc) cases = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) first = (uint32_t)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(argv[i], "-k") && i + 1 < argc) nkeys = atoi(argv[++i]);
+        if (!strcmp(argv[i], "-n") && i + 1 < argc)
+            cases = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc)
+            first = (uint32_t)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "-k") && i + 1 < argc)
+            nkeys = atoi(argv[++i]);
     }
     const char *tmp = getenv("TMPDIR");
     char base[PATH_MAX];
-    snprintf(base, sizeof(base), "%s/quip-diff-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-diff-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 2;
     }
     char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/session", base);
+    path_fmt(dir, sizeof(dir), "%s/session", base);
 
     printf("comparing %s\n     with %s\n", oldbin, newbin);
     int differ = 0, failed = 0;
@@ -195,8 +201,8 @@ int main(int argc, char **argv) {
         result a = run(&c, oldbin, dir);
         result b = run(&c, newbin, dir);
         if (!a.ok || !b.ok) {
-            printf("seed %u: could not run (%s / %s)\n", seed,
-                   a.err ? a.err : "ok", b.err ? b.err : "ok");
+            printf("seed %u: could not run (%s / %s)\n", seed, a.err ? a.err : "ok",
+                   b.err ? b.err : "ok");
             failed++;
         } else if (a.outlen != b.outlen || memcmp(a.out, b.out, a.outlen) != 0) {
             printf("seed %u: terminal output differs\n", seed);

@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # quip before the 2026 rework. Every change is measured against it as
+  # well as against its own base: no slowdown over 10%, and a stripped
+  # binary at most 15% bigger.
+  BASELINE_REF: 8247a12c0db730df40c02c307a0950d7e46a4b01
+  CLANG_FORMAT_MAJOR: 23
+
+jobs:
+  test:
+    name: ${{ matrix.os }} ${{ matrix.cc }}${{ matrix.optional && ' (optional)' || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc, sanitize: true, optional: false }
+          - { os: ubuntu-24.04, cc: clang, sanitize: true, optional: false }
+          # GitHub is often short of Apple Silicon runners, so the required
+          # macOS check runs on Intel, and the Apple Silicon jobs run when a
+          # runner is free without blocking anything.
+          - { os: macos-15-intel, cc: clang, sanitize: true, optional: false }
+          - { os: macos-15, cc: clang, sanitize: true, optional: true }
+          # "gcc" on macOS is clang; this is the real one. GCC has no
+          # sanitizer runtime for Apple Silicon.
+          - { os: macos-15, cc: gcc-14, sanitize: false, optional: true }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # git describe sets the version
+
+      - name: Allow the sanitizer runtime's memory layout
+        if: runner.os == 'Linux'
+        # The runners' high mmap randomization breaks ASan's shadow memory.
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Build with warnings as errors
+        run: make CC=${{ matrix.cc }} WERROR=-Werror quip quip-debug tests/run tests/fuzz tests/differential bench/bench
+
+      - name: End-to-end tests
+        run: make CC=${{ matrix.cc }} WERROR=-Werror test
+
+      - name: End-to-end tests under ASan and UBSan
+        if: matrix.sanitize
+        run: make CC=${{ matrix.cc }} WERROR=-Werror test-asan
+
+      - name: Fuzz, 200 random sessions
+        if: matrix.sanitize
+        run: make CC=${{ matrix.cc }} WERROR=-Werror fuzz FUZZ="-n 200"
+
+      - name: Install
+        run: |
+          make CC=${{ matrix.cc }} install PREFIX="$RUNNER_TEMP/prefix"
+          test -x "$RUNNER_TEMP/prefix/bin/quip"
+          ls "$RUNNER_TEMP/prefix/share/quip/langs/c.lang"
+
+  bench:
+    name: bench ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Each machine lists the figures that came out worse than allowed;
+      # bench-verdict fails only for a figure that is worse on both Linux and
+      # macOS, since on one machine code layout alone can move a figure 10%.
+      - name: Speed and size against the base of this change
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          mkdir -p results
+          bench/regressions.sh "$base" results/base.txt
+
+      - name: Speed and size against the baseline
+        run: bench/regressions.sh "$BASELINE_REF" results/baseline.txt
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bench-${{ matrix.os }}
+          path: results/
+
+  # Apple Silicon, when GitHub has a runner free. Its figures are shown
+  # but never block a change, and bench-verdict does not wait for it.
+  bench-apple-silicon:
+    name: bench macos-15 (optional)
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Speed and size against the base of this change
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          bench/regressions.sh "$base" /dev/null
+
+  bench-verdict:
+    needs: bench
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every required benchmark ran
+        if: needs.bench.result != 'success'
+        run: exit 1
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: bench-*
+          path: results
+
+      - name: No figure worse on both Linux and macOS
+        run: |
+          fail=0
+          for against in base baseline; do
+            linux=results/bench-ubuntu-24.04/$against.txt
+            mac=results/bench-macos-15-intel/$against.txt
+            echo "Against the $against: Linux: $(paste -sd, "$linux"); macOS: $(paste -sd, "$mac")"
+            both=$(comm -12 "$linux" "$mac")
+            if [ -n "$both" ]; then
+              echo "::error::Worse on both Linux and macOS against the $against: $(echo "$both" | paste -sd, -)"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install clang-format ${{ env.CLANG_FORMAT_MAJOR }}
+        # Pinned to one major version: others format some code differently.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$CLANG_FORMAT_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "clang-format-$CLANG_FORMAT_MAJOR"
+
+      - name: Check formatting
+        run: make check-format CLANG_FORMAT="clang-format-$CLANG_FORMAT_MAJOR"

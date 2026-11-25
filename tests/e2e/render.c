@@ -23,7 +23,10 @@ TEST(gutter_marks_current_line) {
 
 TEST(gutter_widens_with_line_count) {
     char *text = malloc(1000 * 2 + 1);
-    for (int i = 0; i < 1000; i++) { text[2 * i] = 'x'; text[2 * i + 1] = '\n'; }
+    for (int i = 0; i < 1000; i++) {
+        text[2 * i] = 'x';
+        text[2 * i + 1] = '\n';
+    }
     text[2000] = '\0';
     quip *q = qstart("a.txt", text);
     free(text);
@@ -122,6 +125,21 @@ TEST(resize_redraws_to_new_size) {
     CHECK_INT((int)strlen(qrow(q, 9)), 40);
     qresize(q, 30, 100);
     CHECK_INT((int)strlen(qrow(q, 29)), 100);
+    qquit(q);
+}
+
+TEST(resize_during_search_keeps_the_prompt) {
+    /* Regression: on Linux any resize made quip exit. The prompt reads keys
+     * itself, so a resize there must redraw it and carry on. */
+    quip *q = qstart("a.c", "int alpha;\nint beta;\n");
+    qkey(q, K_CTRL_F);
+    qtype(q, "be");
+    qresize(q, 12, 50);
+    CHECK_STR(qrow(q, 12), "Search: be (Use ESC/Arrows/Enter)");
+    qtype(q, "t");
+    CHECK_STR(qmessage(q), "Search: bet (Use ESC/Arrows/Enter)");
+    qkey(q, K_ENTER);
+    CHECK_INT(q->scr.x, 4 + 4);
     qquit(q);
 }
 TEST(full_width_line_keeps_last_column) {

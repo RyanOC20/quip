@@ -50,8 +50,8 @@ static char *read_file(const char *path) {
 static pid_t start_run(const kcase *c, char *log, size_t logsize) {
     char dir[PATH_MAX];
     int id = ++run_counter;
-    snprintf(dir, sizeof(dir), "%s/r%d", base, id);
-    snprintf(log, logsize, "%s/r%d.log", base, id);
+    path_fmt(dir, sizeof(dir), "%s/r%d", base, id);
+    path_fmt(log, logsize, "%s/r%d.log", base, id);
     mkdir(dir, 0700);
     fflush(stdout);
     pid_t pid = fork();
@@ -84,8 +84,7 @@ static char *finish_run(pid_t pid, const char *log) {
         text = read_file(log);
         if (WIFSIGNALED(st)) {
             char extra[64];
-            snprintf(extra, sizeof(extra), "\nharness killed by signal %d\n",
-                     WTERMSIG(st));
+            snprintf(extra, sizeof(extra), "\nharness killed by signal %d\n", WTERMSIG(st));
             text = realloc(text, strlen(text) + sizeof(extra));
             strcat(text, extra);
         }
@@ -106,10 +105,15 @@ static char *run_case(const kcase *c) {
 /* What kind of failure a log shows, with numbers and addresses blanked so
  * that the same bug found with fewer keys still matches. */
 static void signature(const char *log, char *out, size_t size) {
-    const char *keys[] = {"ERROR: AddressSanitizer:", "runtime error:",
-                          "unexpected terminal output:", "died from signal",
-                          "timed out", "exited", "did not quit",
-                          "harness killed", NULL};
+    const char *keys[] = {"ERROR: AddressSanitizer:",
+                          "runtime error:",
+                          "unexpected terminal output:",
+                          "died from signal",
+                          "timed out",
+                          "exited",
+                          "did not quit",
+                          "harness killed",
+                          NULL};
     const char *line = NULL;
     for (int i = 0; keys[i] && !line; i++) line = strstr(log, keys[i]);
     if (!line) line = log;
@@ -145,8 +149,7 @@ static void minimize(kcase *c, const char *sig) {
         int reduced = 0;
         for (int start = 0; start < c->nkeys; start += chunk) {
             char *keep = malloc(c->nkeys);
-            for (int i = 0; i < c->nkeys; i++)
-                keep[i] = !(i >= start && i < start + chunk);
+            for (int i = 0; i < c->nkeys; i++) keep[i] = !(i >= start && i < start + chunk);
             kcase t;
             kcase_subset(c, keep, &t);
             free(keep);
@@ -198,24 +201,30 @@ int main(int argc, char **argv) {
     uint32_t first = 1;
     double limit = 0;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-n") && i + 1 < argc) cases = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-s") && i + 1 < argc) first = (uint32_t)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(argv[i], "-k") && i + 1 < argc) nkeys = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-j") && i + 1 < argc) jobs = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-t") && i + 1 < argc) limit = atof(argv[++i]);
+        if (!strcmp(argv[i], "-n") && i + 1 < argc)
+            cases = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc)
+            first = (uint32_t)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(argv[i], "-k") && i + 1 < argc)
+            nkeys = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-j") && i + 1 < argc)
+            jobs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-t") && i + 1 < argc)
+            limit = atof(argv[++i]);
         else {
-            fprintf(stderr, "usage: %s [-n cases] [-s first_seed] [-k keys] "
-                            "[-j jobs] [-t seconds]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [-n cases] [-s first_seed] [-k keys] "
+                    "[-j jobs] [-t seconds]\n",
+                    argv[0]);
             return 2;
         }
     }
     if (jobs < 1) jobs = 1;
-    printf("fuzzing %s: seeds %u..%u, %d keys each\n", qbin(), first,
-           first + cases - 1, nkeys);
+    printf("fuzzing %s: seeds %u..%u, %d keys each\n", qbin(), first, first + cases - 1, nkeys);
     fflush(stdout);
 
     const char *tmp = getenv("TMPDIR");
-    snprintf(base, sizeof(base), "%s/quip-fuzz-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    path_fmt(base, sizeof(base), "%s/quip-fuzz-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     if (!mkdtemp(base)) {
         perror("mkdtemp");
         return 2;
@@ -258,8 +267,7 @@ int main(int argc, char **argv) {
             log = read_file(slots[s].log);
             if (WIFSIGNALED(st)) {
                 char extra[64];
-                snprintf(extra, sizeof(extra), "\nharness killed by signal %d\n",
-                         WTERMSIG(st));
+                snprintf(extra, sizeof(extra), "\nharness killed by signal %d\n", WTERMSIG(st));
                 log = realloc(log, strlen(log) + sizeof(extra));
                 strcat(log, extra);
             }

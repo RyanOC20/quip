@@ -22,40 +22,39 @@ void test_on_fail_remove(void *ctx);
  * so a bad path can never delete anything else. */
 void test_remove_tree(const char *path);
 
+/* snprintf for paths: exits with an error rather than use a truncated path,
+ * which could name some other file. */
+void path_fmt(char *out, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
 /* The test's private temporary directory, removed after the test. */
 extern const char *test_dir;
 
-#define TEST(name)                                                        \
-    static void test_##name(void);                                        \
-    __attribute__((constructor)) static void test_reg_##name(void) {      \
-        test_register(#name, test_##name, __FILE__);                      \
-    }                                                                     \
+#define TEST(name)                                                   \
+    static void test_##name(void);                                   \
+    __attribute__((constructor)) static void test_reg_##name(void) { \
+        test_register(#name, test_##name, __FILE__);                 \
+    }                                                                \
     static void test_##name(void)
 
-#define CHECK(cond)                                                       \
-    do {                                                                  \
-        if (!(cond)) test_fail(__FILE__, __LINE__, "CHECK(%s)", #cond);   \
+#define CHECK(cond)                                                     \
+    do {                                                                \
+        if (!(cond)) test_fail(__FILE__, __LINE__, "CHECK(%s)", #cond); \
     } while (0)
 
-#define CHECK_INT(a, b)                                                   \
-    do {                                                                  \
-        long long a_ = (long long)(a), b_ = (long long)(b);               \
-        if (a_ != b_)                                                     \
-            test_fail(__FILE__, __LINE__, "%s is %lld, expected %lld",    \
-                      #a, a_, b_);                                        \
+#define CHECK_INT(a, b)                                                                       \
+    do {                                                                                      \
+        long long a_ = (long long)(a), b_ = (long long)(b);                                   \
+        if (a_ != b_) test_fail(__FILE__, __LINE__, "%s is %lld, expected %lld", #a, a_, b_); \
     } while (0)
 
-void test_check_str(const char *file, int line, const char *expr,
-                    const char *got, const char *want);
-#define CHECK_STR(got, want)                                              \
-    test_check_str(__FILE__, __LINE__, #got, (got), (want))
+void test_check_str(const char *file, int line, const char *expr, const char *got,
+                    const char *want);
+#define CHECK_STR(got, want) test_check_str(__FILE__, __LINE__, #got, (got), (want))
 
 /* Byte strings that may hold NULs. */
-void test_check_mem(const char *file, int line, const char *expr,
-                    const char *got, int gotlen, const char *want,
-                    int wantlen);
-#define CHECK_MEM(got, gotlen, want, wantlen)                             \
-    test_check_mem(__FILE__, __LINE__, #got, (got), (gotlen), (want),     \
-                   (wantlen))
+void test_check_mem(const char *file, int line, const char *expr, const char *got, int gotlen,
+                    const char *want, int wantlen);
+#define CHECK_MEM(got, gotlen, want, wantlen) \
+    test_check_mem(__FILE__, __LINE__, #got, (got), (gotlen), (want), (wantlen))
 
 #endif

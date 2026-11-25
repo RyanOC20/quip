@@ -84,7 +84,7 @@ static void mkdirs(const char *path) {
 
 void qwrite(quip *q, const char *name, const char *content) {
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", q->dir, name);
+    path_fmt(path, sizeof(path), "%s/%s", q->dir, name);
     char *slash = strrchr(path, '/');
     *slash = '\0';
     mkdirs(path);
@@ -97,7 +97,7 @@ void qwrite(quip *q, const char *name, const char *content) {
 
 const char *qpath(quip *q, const char *name) {
     static char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", q->dir, name);
+    path_fmt(path, sizeof(path), "%s/%s", q->dir, name);
     return path;
 }
 
@@ -119,33 +119,32 @@ char *qread(quip *q, const char *name, int *len) {
 static void set_env(const char *dir) {
     char buf[PATH_MAX];
     setenv("HOME", dir, 1);
-    snprintf(buf, sizeof(buf), "%s/.config", dir);
+    path_fmt(buf, sizeof(buf), "%s/.config", dir);
     setenv("XDG_CONFIG_HOME", buf, 1);
-    snprintf(buf, sizeof(buf), "%s/.local/share", dir);
+    path_fmt(buf, sizeof(buf), "%s/.local/share", dir);
     setenv("XDG_DATA_HOME", buf, 1);
-    snprintf(buf, sizeof(buf), "%s/.no-data-dirs", dir);
+    path_fmt(buf, sizeof(buf), "%s/.no-data-dirs", dir);
     setenv("XDG_DATA_DIRS", buf, 1);
     unsetenv("QUIP_LANGDIR");
     setenv("TERM", "xterm-256color", 1);
+    /* With AddressSanitizer on Intel macOS, the system allocator otherwise
+     * prints "nano zone abandoned" to the terminal at startup. */
+    setenv("MallocNanoZone", "0", 1);
     /* Sanitizer reports go to files, not the terminal, and fail the test. */
-    snprintf(buf, sizeof(buf),
-             "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
     setenv("ASAN_OPTIONS", buf, 1);
-    snprintf(buf, sizeof(buf),
-             "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
     setenv("UBSAN_OPTIONS", buf, 1);
 }
 
-quip *qstart(const char *file, const char *content) {
-    return qstart_opts(file, content, NULL);
-}
+quip *qstart(const char *file, const char *content) { return qstart_opts(file, content, NULL); }
 
 quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     qopts def = {0};
     if (!o) o = &def;
     quip *q = calloc(1, sizeof(quip));
     const char *base = test_dir ? test_dir : "/tmp";
-    snprintf(q->dir, sizeof(q->dir), "%s/s%d", base, ++session_seq);
+    path_fmt(q->dir, sizeof(q->dir), "%s/s%d", base, ++session_seq);
     mkdirs(q->dir);
     if (content) qwrite(q, file, content);
     for (int i = 0; o->files && o->files[i]; i += 2) qwrite(q, o->files[i], o->files[i + 1]);
@@ -253,7 +252,7 @@ static void reap(quip *q, int block) {
 #ifdef __APPLE__
         q->maxrss_kb = ru.ru_maxrss / 1024; /* bytes on macOS */
 #else
-        q->maxrss_kb = ru.ru_maxrss;        /* kilobytes on Linux */
+        q->maxrss_kb = ru.ru_maxrss; /* kilobytes on Linux */
 #endif
     }
 }
@@ -290,8 +289,8 @@ void qwait_frames(quip *q, long frames) {
     long deadline = now_ms() + q->timeout_ms;
     while (q->scr.frames < frames) {
         if (now_ms() > deadline)
-            test_fail(__FILE__, __LINE__, "timed out waiting for frame %ld (have %ld)",
-                      frames, q->scr.frames);
+            test_fail(__FILE__, __LINE__, "timed out waiting for frame %ld (have %ld)", frames,
+                      q->scr.frames);
         if (!pump_once(q, 20)) check_alive(q);
         check_alive(q);
     }
@@ -305,9 +304,7 @@ void qsend(quip *q, const char *bytes, int len, int frames) {
     qwait_frames(q, target);
 }
 
-void qkey(quip *q, const char *seq) {
-    qsend(q, seq, (int)strlen(seq), 1);
-}
+void qkey(quip *q, const char *seq) { qsend(q, seq, (int)strlen(seq), 1); }
 
 void qtype(quip *q, const char *text) {
     int n = (int)strlen(text);
@@ -318,8 +315,7 @@ void qtype(quip *q, const char *text) {
 }
 
 static void mouse(quip *q, int button, int row, int col) {
-    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col),
-                   (char)(32 + row)};
+    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col), (char)(32 + row)};
     qsend(q, seq, 6, 1);
 }
 
@@ -350,9 +346,7 @@ const char *qrow(quip *q, int row) {
     return screen_row_text(&q->scr, row - 1, buf, sizeof(buf));
 }
 
-const cell *qcell(quip *q, int row, int col) {
-    return screen_cell(&q->scr, row - 1, col - 1);
-}
+const cell *qcell(quip *q, int row, int col) { return screen_cell(&q->scr, row - 1, col - 1); }
 
 const char *qline(quip *q, int row) {
     static char buf[4096];
@@ -424,8 +418,7 @@ char *qstop(quip *q, int quit) {
     char *rep = sanitizer_report(q);
     if (rep) {
         size_t l = strlen(msg);
-        snprintf(msg + l, sizeof(msg) - l, "%ssanitizer report:\n%.1500s",
-                 l ? "\n" : "", rep);
+        snprintf(msg + l, sizeof(msg) - l, "%ssanitizer report:\n%.1500s", l ? "\n" : "", rep);
         free(rep);
     }
     return msg[0] ? strdup(msg) : NULL;
