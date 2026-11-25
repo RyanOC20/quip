@@ -1,27 +1,21 @@
 /* Drawing the screen: text, gutter, sidebar and status bar. */
 #include "quip.h"
 
-/* Bytes that a terminal would obey instead of print: a C0 control or DEL
- * (1 byte), or a C1 control U+0080-U+009F written in UTF-8 (2 bytes).
- * Returns how many bytes at s[i] form one, or 0. Text from files, file names
- * and messages must never reach the terminal with these intact. */
-static int editorCtrlLen(const char *s, int i, int n) {
-    unsigned char b = (unsigned char)s[i];
-    if (b < 0x20 || b == 0x7f) return 1;
-    if (b == 0xc2 && i + 1 < n && (unsigned char)s[i + 1] >= 0x80 &&
-        (unsigned char)s[i + 1] <= 0x9f)
-        return 2;
-    return 0;
-}
-
-/* Replace control characters in 's' with '?', one per byte. */
+/* Replace control characters in 's', and bytes that are not valid UTF-8,
+ * with '?', one per byte, so that the text is safe to print and its width
+ * is known. */
 void editorSanitize(char *s, int n) {
     int i = 0;
     while (i < n) {
         int k = editorCtrlLen(s, i, n);
         if (k == 0) {
-            i++;
-            continue;
+            uint32_t cp;
+            k = utf8Decode(s, i, n, &cp);
+            if (k) {
+                i += k;
+                continue;
+            }
+            k = 1;
         }
         while (k--) s[i++] = '?';
     }
@@ -42,38 +36,12 @@ void abAppend(struct abuf *ab, const char *s, int len) {
 
 static void abFree(struct abuf *ab) { free(ab->b); }
 
-int editorCharToRenderCol(erow *row, int char_col) {
-    int rcol = 0;
-    for (int i = 0; i < char_col && i < row->size; i++) {
-        if (row->chars[i] == TAB)
-            rcol += QUIP_TAB_STOP - (rcol % QUIP_TAB_STOP);
-        else
-            rcol++;
-    }
-    return rcol;
-}
-
-/* Inverse of editorCharToRenderCol: the char column whose rendering covers
- * render column 'rcol' (a click inside a TAB lands just after it). */
-int editorRenderToCharCol(erow *row, int rcol) {
-    int fc = 0, rc = 0;
-    while (fc < row->size && rc < rcol) {
-        if (row->chars[fc] == TAB)
-            rc += QUIP_TAB_STOP - (rc % QUIP_TAB_STOP);
-        else
-            rc++;
-        fc++;
-    }
-    return fc;
-}
-
 /* Character column of the cursor: UTF-8 continuation bytes before it are not
  * counted, so a multibyte character advances the column by one. */
 static int editorCursorCharCol(void) {
-    int filerow = E.rowoff + E.cy, col = E.coloff + E.cx;
-    if (filerow >= E.numrows) return col;
-    erow *row = &E.row[filerow];
-    int bytes = col < row->size ? col : row->size, n = col - bytes;
+    if (E.cy >= E.numrows) return E.cx;
+    erow *row = &E.row[E.cy];
+    int bytes = E.cx < row->size ? E.cx : row->size, n = E.cx - bytes;
     for (int j = 0; j < bytes; j++)
         if (((unsigned char)row->chars[j] & 0xC0) != 0x80) n++;
     return n;
@@ -98,7 +66,7 @@ static int editorIsCodeAt(const erow *row, int rcol) {
  * *mrow,*mcol. Scans the whole file at worst, which is a plain byte loop. */
 static int editorFindBracketPair(int *brow, int *bcol, int *mrow, int *mcol) {
     static const char open[] = "([{", close[] = ")]}";
-    int y = E.rowoff + E.cy, col = E.coloff + E.cx;
+    int y = E.cy, col = E.cx;
     if (y >= E.numrows) return BRACKET_NONE;
     erow *row = &E.row[y];
     if (col >= row->size) return BRACKET_NONE;
@@ -107,7 +75,7 @@ static int editorFindBracketPair(int *brow, int *bcol, int *mrow, int *mcol) {
     const char *o = c ? strchr(open, c) : NULL;
     const char *cl = c ? strchr(close, c) : NULL;
     if (!o && !cl) return BRACKET_NONE;
-    int x = editorCharToRenderCol(row, col);
+    int x = rowCxToRidx(row, col);
     if (!editorIsCodeAt(row, x)) return BRACKET_NONE;
 
     char want = o ? close[o - open] : open[cl - close];
@@ -152,15 +120,32 @@ void editorUpdateGeometry(void) {
     E.ln_width = (avail - (digits + 1) >= LN_MIN_TEXT) ? digits + 1 : 0;
     E.screencols = avail - E.ln_width;
     if (E.screencols < 1) E.screencols = 1;
-    /* Keep the cursor inside the (possibly narrower) text area. */
-    if (E.cx >= E.screencols) {
-        E.coloff += E.cx - (E.screencols - 1);
-        E.cx = E.screencols - 1;
-    }
-    if (E.cx < 0) E.cx = 0;
-    if (E.coloff < 0) E.coloff = 0;
 }
 
+/* Scroll the view so that the cursor is on screen. This runs before every
+ * redraw, so commands only move the cursor, in file coordinates, and leave
+ * the view to this. It scrolls as little as shows the cursor and the whole
+ * character under it, except that a cursor gone off the left edge on a line
+ * that fits on screen takes the view back to column 0, to show all of it. */
+void editorScroll(void) {
+    if (E.cy < E.rowoff) E.rowoff = E.cy;
+    if (E.cy >= E.rowoff + E.screenrows) E.rowoff = E.cy - E.screenrows + 1;
+    if (E.rowoff < 0) E.rowoff = 0;
+
+    erow *row = E.cy < E.numrows ? &E.row[E.cy] : NULL;
+    int rx = row ? rowCxToRx(row, E.cx) : E.cx, w = 1;
+    if (row && E.cx < row->size && row->chars[E.cx] != TAB) {
+        int k;
+        w = textCell(row->chars, E.cx, row->size, rx, &k);
+        if (w > E.screencols) w = E.screencols;
+        if (w < 1) w = 1;
+    }
+    if (rx < E.coloff) {
+        E.coloff = rx;
+        if (!row || rowCxToRx(row, row->size) < E.screencols) E.coloff = 0;
+    }
+    if (rx + w > E.coloff + E.screencols) E.coloff = rx + w - E.screencols;
+}
 /* Draw the gutter cell for 'filerow': its right-aligned line number and a
  * separating space, with the cursor's line brighter than the rest. Rows past
  * the end of the file get a '~' marker instead. */
@@ -171,7 +156,7 @@ static void editorDrawGutter(struct abuf *ab, int filerow) {
         abAppend(ab, buf, len);
         return;
     }
-    int current = (filerow == E.rowoff + E.cy);
+    int current = (filerow == E.cy);
     if (current)
         abAppendLit(ab, VT_BOLD);
     else
@@ -190,6 +175,7 @@ void editorRefreshScreen(void) {
     struct abuf ab = ABUF_INIT;
 
     editorUpdateGeometry();
+    editorScroll();
     abAppendLit(&ab, VT_CURSOR_HIDE); /* Hide cursor. */
     abAppendLit(&ab, VT_HOME);        /* Go home. */
 
@@ -236,122 +222,144 @@ void editorRefreshScreen(void) {
                 sel_newline = filerow < er;
                 int char_start = (filerow == sr) ? sc : 0;
                 int char_end = (filerow == er) ? ec : r->size;
-                sel_rcol_start = editorCharToRenderCol(r, char_start);
-                sel_rcol_end = (filerow < er) ? r->rsize : editorCharToRenderCol(r, char_end);
+                sel_rcol_start = rowCxToRidx(r, char_start);
+                sel_rcol_end = (filerow < er) ? r->rsize : rowCxToRidx(r, char_end);
             }
         }
 
         /* Spaces that end the line get a red background. */
         int trail = r->size;
         while (trail > 0 && r->chars[trail - 1] == ' ') trail--;
-        int trail_rcol = editorCharToRenderCol(r, trail);
+        int trail_rcol = rowCxToRidx(r, trail);
 
-        int len = r->rsize - E.coloff;
         int current_color = -1;
         int in_selection = 0;
         int cur_bg = BG_DEFAULT; /* Background SGR in effect, a BG_* value. */
-        int cells = 0;           /* Screen cells the text took. */
-        if (len > 0) {
-            if (len > E.screencols) len = E.screencols;
-            char *c = r->render + E.coloff;
-            unsigned char *hl = r->hl + E.coloff;
-            int j;
-            /* Coalesce consecutive characters that share the same style into a
-             * single append. 'run_start' marks the first not-yet-flushed char;
-             * we flush the pending slice right before emitting any escape. */
-            int run_start = 0;
-            for (j = 0; j < len; j++) {
-                int rcol = E.coloff + j;
+        char *c = r->render;
+        unsigned char *hl = r->hl;
+        int n = r->rsize, k;
 
-                /* Handle selection highlight transitions. */
-                if (sel_rcol_start >= 0) {
-                    if (!in_selection && rcol >= sel_rcol_start && rcol < sel_rcol_end) {
-                        if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-                        run_start = j;
-                        abAppendLit(&ab, VT_REVERSE);
-                        in_selection = 1;
-                        current_color = -1;
-                    } else if (in_selection && rcol >= sel_rcol_end) {
-                        if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-                        run_start = j;
-                        abAppendLit(&ab, VT_REVERSE_OFF);
-                        in_selection = 0;
-                        current_color = -1;
-                    }
-                }
+        /* The view starts at screen column 'coloff' of the line. A wide
+         * character cut by the left edge shows as a blank, and combining
+         * marks whose base scrolled away are skipped: the terminal would
+         * put them on the gutter. */
+        int start = 0, col = 0;
+        while (start < n && col < E.coloff) {
+            col += textCell(c, start, n, col, &k);
+            start += k;
+        }
+        if (E.coloff)
+            while (start < n && textCell(c, start, n, col, &k) == 0) start += k;
+        int cells = col > E.coloff ? col - E.coloff : 0; /* Screen cells the text took. */
+        if (cells) abAppend(&ab, " ", cells);
+        /* It ends with the last character that fits whole. */
+        int end = start;
+        while (end < n) {
+            int w = textCell(c, end, n, col, &k);
+            if (cells + w > E.screencols) break;
+            cells += w;
+            col += w;
+            end += k;
+        }
 
-                /* Background: a selection takes precedence, then the
-                 * matched or unmatched brackets, then trailing spaces. */
-                int want_bg = BG_DEFAULT;
-                if (!in_selection) {
-                    if (filerow == br_row && rcol == br_col)
-                        want_bg = br_bg;
-                    else if (filerow == bm_row && rcol == bm_col)
-                        want_bg = br_bg;
-                    else if (rcol >= trail_rcol)
-                        want_bg = BG_TRAILING_SPACE;
-                }
-                if (want_bg != cur_bg) {
+        /* Coalesce consecutive characters that share the same style into a
+         * single append. 'run_start' marks the first not-yet-flushed byte;
+         * we flush the pending slice right before emitting any escape. */
+        int run_start = start, j;
+        for (j = start; j < end; j++) {
+            int rcol = j; /* Offsets in 'render' and 'hl' are the same. */
+
+            /* Handle selection highlight transitions. */
+            if (sel_rcol_start >= 0) {
+                if (!in_selection && rcol >= sel_rcol_start && rcol < sel_rcol_end) {
                     if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
                     run_start = j;
-                    char sgr[8];
-                    int slen = snprintf(sgr, sizeof(sgr), "\x1b[%dm", want_bg);
-                    abAppend(&ab, sgr, slen);
-                    cur_bg = want_bg;
-                }
-
-                int ctrl = editorCtrlLen(c, j, len);
-                if (ctrl) {
-                    /* A control character is never sent as is, whatever the
-                     * lexer made of it: draw it reversed in caret notation,
-                     * ^A as 'A' and ESC as '[', and DEL or a C1 control as
-                     * '?', one cell per byte. */
-                    unsigned char b = (unsigned char)c[j];
-                    char sym[2] = {'?', '?'};
-                    if (b < 0x20) sym[0] = '@' + b;
-                    if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-                    if (!in_selection) abAppendLit(&ab, VT_REVERSE);
-                    abAppend(&ab, sym, ctrl);
-                    abAppendLit(&ab, VT_RESET);
+                    abAppendLit(&ab, VT_REVERSE);
+                    in_selection = 1;
                     current_color = -1;
-                    cur_bg = BG_DEFAULT; /* VT_RESET cleared it too. */
-                    if (in_selection) abAppendLit(&ab, VT_REVERSE);
-                    j += ctrl - 1;
-                    run_start = j + 1; /* 'sym' replaces the bytes. */
-                } else if (hl[j] == HL_NORMAL) {
-                    if (current_color != -1) {
-                        if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-                        run_start = j;
-                        abAppendLit(&ab, VT_FG_DEFAULT);
-                        current_color = -1;
-                    }
-                    /* Character joins the pending run. */
-                } else {
-                    int color = editorSyntaxToColor(hl[j]);
-                    if (color != current_color) {
-                        if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-                        run_start = j;
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        current_color = color;
-                        abAppend(&ab, buf, clen);
-                    }
-                    /* Character joins the pending run. */
+                } else if (in_selection && rcol >= sel_rcol_end) {
+                    if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
+                    run_start = j;
+                    abAppendLit(&ab, VT_REVERSE_OFF);
+                    in_selection = 0;
+                    current_color = -1;
                 }
             }
-            /* Flush the trailing run. */
-            if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
-            /* One cell per byte, except that UTF-8 continuation bytes join
-             * the character before them; a control is a cell per byte. */
-            for (j = 0; j < len; j++) {
-                int ctrl = editorCtrlLen(c, j, len);
-                if (ctrl) {
-                    cells += ctrl;
-                    j += ctrl - 1;
-                } else if (((unsigned char)c[j] & 0xc0) != 0x80)
-                    cells++;
+
+            /* Background: a selection takes precedence, then the
+             * matched or unmatched brackets, then trailing spaces. */
+            int want_bg = BG_DEFAULT;
+            if (!in_selection) {
+                if (filerow == br_row && rcol == br_col)
+                    want_bg = br_bg;
+                else if (filerow == bm_row && rcol == bm_col)
+                    want_bg = br_bg;
+                else if (rcol >= trail_rcol)
+                    want_bg = BG_TRAILING_SPACE;
             }
+            if (want_bg != cur_bg) {
+                if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
+                run_start = j;
+                char sgr[8];
+                int slen = snprintf(sgr, sizeof(sgr), "\x1b[%dm", want_bg);
+                abAppend(&ab, sgr, slen);
+                cur_bg = want_bg;
+            }
+
+            /* Past ASCII, a whole UTF-8 sequence is one step, so no escape
+             * ever lands inside one. A byte that does not start a valid
+             * sequence is drawn like a control character. */
+            unsigned char b = (unsigned char)c[j];
+            int ctrl = 0, clen = 1;
+            if (b < 0x20 || b >= 0x7f) {
+                ctrl = editorCtrlLen(c, j, n);
+                if (!ctrl && b >= 0x80) {
+                    uint32_t cp;
+                    clen = utf8Decode(c, j, n, &cp);
+                    if (clen == 0) ctrl = clen = 1;
+                }
+            }
+            if (ctrl) {
+                /* A control character is never sent as is, whatever the
+                 * lexer made of it: draw it reversed in caret notation,
+                 * ^A as 'A' and ESC as '[', and DEL, a C1 control or a
+                 * stray byte as '?', one cell per byte. */
+                char sym[2] = {'?', '?'};
+                if (b < 0x20) sym[0] = '@' + b;
+                if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
+                if (!in_selection) abAppendLit(&ab, VT_REVERSE);
+                abAppend(&ab, sym, ctrl);
+                abAppendLit(&ab, VT_RESET);
+                current_color = -1;
+                cur_bg = BG_DEFAULT; /* VT_RESET cleared it too. */
+                if (in_selection) abAppendLit(&ab, VT_REVERSE);
+                j += ctrl - 1;
+                run_start = j + 1; /* 'sym' replaces the bytes. */
+                continue;
+            } else if (hl[j] == HL_NORMAL) {
+                if (current_color != -1) {
+                    if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
+                    run_start = j;
+                    abAppendLit(&ab, VT_FG_DEFAULT);
+                    current_color = -1;
+                }
+                /* Character joins the pending run. */
+            } else {
+                int color = editorSyntaxToColor(hl[j]);
+                if (color != current_color) {
+                    if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
+                    run_start = j;
+                    char buf[16];
+                    int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                    current_color = color;
+                    abAppend(&ab, buf, clen);
+                }
+                /* Character joins the pending run. */
+            }
+            j += clen - 1;
         }
+        /* Flush the trailing run. */
+        if (j > run_start) abAppend(&ab, c + run_start, j - run_start);
         abAppendLit(&ab, VT_FG_DEFAULT);
         /* Keep a colored background out of the EOL erase. */
         if (cur_bg != BG_DEFAULT) abAppendLit(&ab, VT_BG_DEFAULT);
@@ -372,25 +380,32 @@ void editorRefreshScreen(void) {
     if (E.ft_open) ftBlankCell(&ab); /* continue the divider under the panes */
     abAppendLit(&ab, VT_CLEAR_EOL);
     abAppendLit(&ab, VT_REVERSE);
-    char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d line%s %s", E.filename, E.numrows,
+    /* The file name takes 20 columns at most. It may hold anything. */
+    char name[64], status[160], rstatus[80];
+    int namelen = snprintf(name, sizeof(name), "%s", E.filename);
+    if (namelen >= (int)sizeof(name)) namelen = sizeof(name) - 1;
+    editorSanitize(name, namelen);
+    int cols;
+    namelen = textFit(name, namelen, 20, &cols);
+    int len = snprintf(status, sizeof(status), "%.*s - %d line%s %s", namelen, name, E.numrows,
                        E.numrows == 1 ? "" : "s", E.dirty ? "(modified)" : "");
-    /* The cursor as line:column, both from 1, as compilers print them. */
+    /* The cursor as line:column, both from 1, as compilers print them,
+     * after the selection size and the line endings when they are CRLF. */
+    char sel[32] = "";
     long selchars = editorSelCharCount();
-    int rlen = selchars ? snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d", selchars,
-                                   E.rowoff + E.cy + 1, editorCursorCharCol() + 1)
-                        : snprintf(rstatus, sizeof(rstatus), "%d:%d", E.rowoff + E.cy + 1,
-                                   editorCursorCharCol() + 1);
-    if (len > statuscols) len = statuscols;
-    editorSanitize(status, len); /* The file name may hold anything. */
+    if (selchars) snprintf(sel, sizeof(sel), "%ld selected  ", selchars);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s%s%d:%d", sel, E.crlf ? "CRLF  " : "",
+                        E.cy + 1, editorCursorCharCol() + 1);
+    len = textFit(status, len, statuscols, &cols);
     abAppend(&ab, status, len);
-    while (len < statuscols) {
-        if (statuscols - len == rlen) {
+    /* Columns, not bytes, decide where the position goes. */
+    while (cols < statuscols) {
+        if (statuscols - cols == rlen) {
             abAppend(&ab, rstatus, rlen);
             break;
         } else {
             abAppendLit(&ab, " ");
-            len++;
+            cols++;
         }
     }
     abAppendLit(&ab, VT_RESET "\r\n");
@@ -400,11 +415,9 @@ void editorRefreshScreen(void) {
     abAppendLit(&ab, VT_CLEAR_EOL);
     int msglen = strlen(E.statusmsg);
     if (msglen && time(NULL) - E.statusmsg_time < 5)
-        abAppend(&ab, E.statusmsg, msglen <= statuscols ? msglen : statuscols);
+        abAppend(&ab, E.statusmsg, textFit(E.statusmsg, msglen, statuscols, &cols));
 
-    /* Put cursor at its current position. Note that the horizontal position
-     * at which the cursor is displayed may be different compared to 'E.cx'
-     * because of TABs. */
+    /* Put the cursor at its current position. */
     if (E.ft_open && E.ft_focus) {
         /* Park the hardware cursor on the selected sidebar row. */
         int srow = E.ft_sel - E.ft_scroll;
@@ -413,18 +426,13 @@ void editorRefreshScreen(void) {
         snprintf(buf, sizeof(buf), "\x1b[%d;1H", srow + 1);
         abAppend(&ab, buf, strlen(buf));
     } else {
-        /* The text is drawn from render column 'coloff', so the cursor goes
-         * at its char column's render column, past the sidebar and gutter. */
-        int filerow = E.rowoff + E.cy;
-        erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-        int col = E.coloff + E.cx;
-        int tx = E.cx;
-        if (row) {
-            tx = editorCharToRenderCol(row, col) - E.coloff;
-            if (col > row->size) tx += col - row->size; /* past end of line */
-            if (tx < 0) tx = 0;
-        }
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, 1 + E.ft_width + E.ln_width + tx);
+        /* The cursor goes at its screen column, counted from the first one
+         * on screen, past the sidebar and gutter. */
+        int rx = E.cy < E.numrows ? rowCxToRx(&E.row[E.cy], E.cx) : E.cx;
+        int tx = rx - E.coloff;
+        if (tx < 0) tx = 0;
+        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy - E.rowoff + 1,
+                 1 + E.ft_width + E.ln_width + tx);
         abAppend(&ab, buf, strlen(buf));
     }
     abAppendLit(&ab, VT_CURSOR_SHOW); /* Show cursor. */

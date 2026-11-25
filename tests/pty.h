@@ -11,17 +11,22 @@
 
 #include "screen.h"
 
+struct quip;
 typedef struct qopts {
-    int rows, cols;           /* Terminal size; 24x80 when 0. */
-    int no_winsize;           /* Report a 0x0 window, as a broken terminal does. */
-    const char *const *argv;  /* Arguments after the program name; NULL means
-                                 just the file name given to qstart. */
-    const char *bin;          /* Binary to run; NULL means $QUIP_BIN. */
-    int no_wait;              /* Don't wait for the first frame. */
-    const char *const *files; /* Extra files to create first: name, content,
-                                 name, content, ..., NULL. */
-    int lenient;              /* Don't fail on output the screen model doesn't
-                                 know (differential runs compare raw bytes). */
+    int rows, cols;                /* Terminal size; 24x80 when 0. */
+    int no_winsize;                /* Report a 0x0 window, as a broken terminal does. */
+    int no_cursor_reply;           /* Don't answer cursor position queries (ESC [6n). */
+    const char *const *argv;       /* Arguments after the program name; NULL means
+                                      just the file name given to qstart. */
+    const char *bin;               /* Binary to run; NULL means $QUIP_BIN. */
+    int no_wait;                   /* Don't wait for the first frame. */
+    const char *const *files;      /* Extra files to create first: name, content,
+                                      name, content, ..., NULL. */
+    int lenient;                   /* Don't fail on output the screen model doesn't
+                                      know (differential runs compare raw bytes). */
+    long fsize_limit;              /* Largest file quip may write (RLIMIT_FSIZE); past it
+                                      the kernel sends SIGXFSZ. 0 for no limit. */
+    void (*setup)(struct quip *q); /* Called once the files exist, before quip starts. */
 } qopts;
 
 typedef struct quip {
@@ -46,8 +51,11 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o);
 void qkey(quip *q, const char *seq);
 /* Send bytes and wait for 'frames' new frames. */
 void qsend(quip *q, const char *bytes, int len, int frames);
-/* Type text, one frame per byte; '\n' is sent as Enter. */
+/* Type text, one frame per character; '\n' is sent as Enter. */
 void qtype(quip *q, const char *text);
+/* Frames quip draws for typed text: one per character, where a well-formed
+ * UTF-8 sequence is one character and any other byte is one of its own. */
+int qtext_frames(const char *text, int n);
 /* Mouse, in 1-based screen coordinates. A click is a press and a release. */
 void qpress(quip *q, int row, int col);
 void qrelease(quip *q, int row, int col);

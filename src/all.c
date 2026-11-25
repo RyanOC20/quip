@@ -15,3 +15,4 @@
 #include "syntax.c"
 #include "term.c"
 #include "undo.c"
+#include "utf8.c"

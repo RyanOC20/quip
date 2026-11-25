@@ -30,7 +30,10 @@ void editorFind(int fd) {
 
         int c = editorReadKey(fd);
         if (c == DEL_KEY || c == CTRL_H || c == BACKSPACE) {
-            if (qlen != 0) query[--qlen] = '\0';
+            /* A UTF-8 character goes as a whole. */
+            while (qlen > 0 && ((unsigned char)query[qlen - 1] & 0xc0) == 0x80) qlen--;
+            if (qlen != 0) qlen--;
+            query[qlen] = '\0';
             last_match = -1;
         } else if (c == ESC || c == ENTER) {
             if (c == ESC) {
@@ -46,9 +49,16 @@ void editorFind(int fd) {
             find_next = 1;
         } else if (c == ARROW_LEFT || c == ARROW_UP) {
             find_next = -1;
-        } else if (isprint(c)) {
-            if (qlen < QUIP_QUERY_LEN) {
-                query[qlen++] = c;
+        } else if ((c >= 0x20 && c < 0x7f) || c >= KEY_CHAR) {
+            char ch[4];
+            int n = 1;
+            if (c >= KEY_CHAR)
+                n = utf8Encode(ch, (uint32_t)(c - KEY_CHAR));
+            else
+                ch[0] = (char)c;
+            if (qlen + n <= QUIP_QUERY_LEN) {
+                memcpy(query + qlen, ch, n);
+                qlen += n;
                 query[qlen] = '\0';
                 last_match = -1;
             }
@@ -87,9 +97,10 @@ void editorFind(int fd) {
                     memcpy(saved_hl, row->hl, row->rsize);
                     memset(row->hl + match_offset, HL_MATCH, qlen);
                 }
-                E.cy = 0;
+                /* The match goes on the top line of the screen. */
+                E.cy = current;
                 E.rowoff = current;
-                editorSetCol(editorRenderToCharCol(row, match_offset));
+                E.cx = rowRidxToCx(row, match_offset);
             }
         }
     }

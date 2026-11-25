@@ -7,7 +7,8 @@
 int writeAll(int fd, const void *buf, size_t len) {
     const char *p = buf;
     while (len > 0) {
-        ssize_t n = write(fd, p, len);
+        /* At most 1 GB a call: macOS refuses writes over INT_MAX bytes. */
+        ssize_t n = write(fd, p, len < (1u << 30) ? len : (1u << 30));
         if (n == -1) {
             if (errno == EINTR) continue;
             return -1;
@@ -99,6 +100,11 @@ fatal:
 static volatile sig_atomic_t winch_pending = 0;
 static void editorHandleResize(void);
 
+/* Bytes read past a UTF-8 lead byte that turned out not to complete it,
+ * handed out again, in order, before anything new is read. */
+static char key_pushback[4];
+static int key_npush = 0, key_pushpos = 0;
+
 /* Read one byte. Returns 1, or 0 when the read times out (raw mode waits
  * 0.1s) or fails. A signal arriving meanwhile does not end the wait. */
 static int readByte(int fd, char *c) {
@@ -108,12 +114,61 @@ static int readByte(int fd, char *c) {
     return n == 1;
 }
 
+/* The key for a mouse report: button code 'b' (the low two bits name the
+ * button, 4/8/16 are Shift/Alt/Ctrl, 32 means motion, 64 the wheel) at the
+ * 0-based cell (x,y). 'release' is set for a button release. */
+static int editorMouseKey(int b, int x, int y, int release) {
+    if (b & 64) {
+        /* Wheel: bits 0-1 give up/down/left/right. Shift turns a vertical
+         * wheel into a horizontal one, for mice without a tilt wheel. */
+        int dir = b & 3;
+        if ((b & 4) && dir < 2) dir += 2;
+        if (dir == 0) return SCROLL_UP;
+        if (dir == 1) return SCROLL_DOWN;
+        if (dir == 2) return SCROLL_LEFT;
+        return SCROLL_RIGHT;
+    }
+    E.mouse_cx = x;
+    E.mouse_cy = y;
+    if (release) return MOUSE_RELEASE;
+    if (b == 0) return MOUSE_CLICK; /* left press */
+    if (b == 32) return MOUSE_DRAG; /* motion, left held */
+    return KEY_NULL;
+}
+
+/* Having read byte 'c', read the rest of the UTF-8 character it starts.
+ * Returns KEY_CHAR plus the code point, or 'c' alone when it does not start a
+ * valid sequence; the bytes read after it then come back as keys of their
+ * own. Typing a character inserts it whole, so a half-typed one is never on
+ * screen. */
+static int editorReadUtf8(int fd, char c) {
+    unsigned char b = (unsigned char)c;
+    if (b < 0xc2 || b > 0xf4) return c;
+    int need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : 2;
+    char u[4] = {c};
+    int n = 1;
+    while (n < need && readByte(fd, u + n)) {
+        n++;
+        if (((unsigned char)u[n - 1] & 0xc0) != 0x80) break;
+    }
+    uint32_t cp;
+    if (n == need && utf8Decode(u, 0, n, &cp) == n) return KEY_CHAR + (int)cp;
+    key_npush = n - 1;
+    key_pushpos = 0;
+    memcpy(key_pushback, u + 1, n - 1);
+    return c;
+}
+
 /* Read a key from the terminal put in raw mode, trying to handle
  * escape sequences. While waiting for the first byte it redraws whenever
  * the terminal is resized. */
 int editorReadKey(int fd) {
     char c, seq[5];
     for (;;) {
+        if (key_pushpos < key_npush) {
+            c = key_pushback[key_pushpos++];
+            break;
+        }
         ssize_t n = read(fd, &c, 1);
         if (n == 1) break;
         if (n == -1 && errno != EINTR && errno != EAGAIN)
@@ -215,28 +270,33 @@ int editorReadKey(int fd) {
                     case 'F': return END_KEY;
                     case 'Z': return SHIFT_TAB;
                     case 'M': {
+                        /* X10 mouse report: button, column and row, each
+                         * a byte, plus 32, columns and rows from 1. */
                         if (!readByte(fd, seq + 2)) return ESC;
                         if (!readByte(fd, seq + 3)) return ESC;
                         if (!readByte(fd, seq + 4)) return ESC;
-                        unsigned char mbtn = (unsigned char)seq[2];
-                        int b = mbtn - 32;
-                        if (b & 64) {
-                            /* Wheel: bits 0-1 give up/down/left/right. Shift
-                             * turns a vertical wheel into a horizontal one,
-                             * for mice without a tilt wheel. */
-                            int dir = b & 3;
-                            if ((b & 4) && dir < 2) dir += 2;
-                            if (dir == 0) return SCROLL_UP;
-                            if (dir == 1) return SCROLL_DOWN;
-                            if (dir == 2) return SCROLL_LEFT;
-                            return SCROLL_RIGHT;
+                        int b = (unsigned char)seq[2] - 32;
+                        return editorMouseKey(b, (unsigned char)seq[3] - 33,
+                                              (unsigned char)seq[4] - 33, b == 3);
+                    }
+                    case '<': {
+                        /* SGR mouse report: ESC [ < button ; column ; row,
+                         * then M for a press or motion, m for a release. */
+                        int v[3] = {0, 0, 0}, k = 0;
+                        char ch;
+                        for (;;) {
+                            if (!readByte(fd, &ch)) return ESC;
+                            if (ch >= '0' && ch <= '9') {
+                                if (v[k] < 100000) v[k] = v[k] * 10 + (ch - '0');
+                            } else if (ch == ';' && k < 2) {
+                                k++;
+                            } else {
+                                break;
+                            }
                         }
-                        E.mouse_cx = (unsigned char)seq[3] - 33;
-                        E.mouse_cy = (unsigned char)seq[4] - 33;
-                        if (mbtn == 32) return MOUSE_CLICK;   /* left press */
-                        if (mbtn == 35) return MOUSE_RELEASE; /* any release */
-                        if (mbtn == 64) return MOUSE_DRAG;    /* motion, left held */
-                        return KEY_NULL;
+                        if (k != 2 || (ch != 'M' && ch != 'm')) return KEY_NULL;
+                        if (ch == 'm' && v[0] != 0) return KEY_NULL; /* not the left button */
+                        return editorMouseKey(v[0], v[1] - 1, v[2] - 1, ch == 'm');
                     }
                     }
                 }
@@ -251,7 +311,7 @@ int editorReadKey(int fd) {
             }
 
             break;
-        default: return c;
+        default: return editorReadUtf8(fd, c);
         }
     }
 }
@@ -333,8 +393,12 @@ int readByteTimeout(unsigned char *ch, int ms) {
 }
 
 void updateWindowSize(void) {
-    if (getWindowSize(STDIN_FILENO, STDOUT_FILENO, &E.screenrows, &E.termcols) == -1) {
-        editorDie("Unable to query the screen for size (columns / rows)", errno);
+    /* A terminal that neither reports its size nor answers is assumed to be
+     * 80x24 until a resize says otherwise. */
+    if (getWindowSize(STDIN_FILENO, STDOUT_FILENO, &E.screenrows, &E.termcols) == -1 ||
+        E.screenrows < 1 || E.termcols < 1) {
+        E.screenrows = 24;
+        E.termcols = 80;
     }
     E.screenrows -= 2;      /* Get room for status bar. */
     editorUpdateGeometry(); /* Reserve columns for the sidebar and gutter. */
@@ -359,11 +423,6 @@ void editorWatchResize(void) {
 static void editorHandleResize(void) {
     winch_pending = 0;
     updateWindowSize();
-    if (E.cy >= E.screenrows) {
-        E.rowoff += E.cy - (E.screenrows - 1);
-        E.cy = E.screenrows - 1;
-    }
     if (E.ft_scroll > E.ft_vcount) E.ft_scroll = E.ft_vcount ? E.ft_vcount - 1 : 0;
-    if (E.coloff < 0) E.coloff = 0;
     editorRefreshScreen();
 }

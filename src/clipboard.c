@@ -1,6 +1,10 @@
 /* Copy and paste: the internal clipboard and the terminal's, through OSC 52. */
 #include "quip.h"
 
+/* The most text a copy sends to the terminal's clipboard. A bigger copy only
+ * goes to quip's own. */
+#define QUIP_OSC52_MAX (16 << 20)
+
 /* Base64, for OSC 52 clipboard reads and writes. */
 
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -15,10 +19,10 @@ static int b64val(unsigned char c) {
 }
 
 /* Returns malloc'd NUL-terminated base64 string. Caller frees. */
-static char *b64Encode(const unsigned char *src, int len) {
-    int outlen = 4 * ((len + 2) / 3);
+static char *b64Encode(const unsigned char *src, size_t len) {
+    size_t outlen = 4 * ((len + 2) / 3);
     char *out = malloc(outlen + 1);
-    int i = 0, j = 0;
+    size_t i = 0, j = 0;
     while (i < len) {
         unsigned int a = (unsigned char)src[i++];
         unsigned int b = (i < len) ? (unsigned char)src[i++] : 0;
@@ -40,12 +44,11 @@ static char *b64Encode(const unsigned char *src, int len) {
 }
 
 /* Returns malloc'd decoded buffer. Sets *outlen. Caller frees. */
-static char *b64Decode(const char *src, int *outlen) {
-    int srclen = 0;
-    while (src[srclen]) srclen++;
-    int maxout = (srclen / 4) * 3 + 3;
+static char *b64Decode(const char *src, size_t *outlen) {
+    size_t srclen = strlen(src);
+    size_t maxout = (srclen / 4) * 3 + 3;
     char *out = malloc(maxout + 1);
-    int i = 0, j = 0;
+    size_t i = 0, j = 0;
     while (i < srclen) {
         /* Skip whitespace that some terminals insert as line-wrap in responses. */
         while (i < srclen && (src[i] == '\r' || src[i] == '\n' || src[i] == ' ')) i++;
@@ -66,7 +69,7 @@ static char *b64Decode(const char *src, int *outlen) {
 
 /* Returns malloc'd string of selected text, sets *outlen. Caller frees.
  * Returns NULL if no selection or zero-length selection. */
-static char *editorGetSelection(int *outlen) {
+static char *editorGetSelection(size_t *outlen) {
     int sr, sc, er, ec;
     if (!editorSelBounds(&sr, &sc, &er, &ec)) return NULL;
 
@@ -80,12 +83,12 @@ static char *editorGetSelection(int *outlen) {
     }
 
     /* Multi-row: calculate total size then fill buffer. */
-    int size = (E.row[sr].size - sc) + 1;                        /* first row chars + newline */
+    size_t size = (size_t)(E.row[sr].size - sc) + 1;             /* first row chars + newline */
     for (int i = sr + 1; i < er; i++) size += E.row[i].size + 1; /* middle rows + newlines */
     size += ec;                                                  /* last row partial */
 
     char *buf = malloc(size + 1);
-    int pos = 0;
+    size_t pos = 0;
     memcpy(buf + pos, E.row[sr].chars + sc, E.row[sr].size - sc);
     pos += E.row[sr].size - sc;
     buf[pos++] = '\n';
@@ -103,7 +106,7 @@ static char *editorGetSelection(int *outlen) {
 
 /* Copies selection to internal clipboard and sends it to terminal via OSC 52. */
 void editorCopySelection(void) {
-    int len;
+    size_t len;
     char *text = editorGetSelection(&len);
     if (!text) return;
 
@@ -111,10 +114,20 @@ void editorCopySelection(void) {
     E.clipboard = text;
     E.clipboard_len = len;
 
+    /* Terminals keep a few megabytes at most, and writing more would hold
+     * quip up for nothing. */
+    if (len > QUIP_OSC52_MAX) {
+        editorSetStatusMessage("Copied %zu bytes, too many for the terminal's clipboard", len);
+        return;
+    }
     char *b64 = b64Encode((unsigned char *)text, len);
-    int seqlen = 8 + (int)strlen(b64); /* ESC ] 52 ; c ; <b64> BEL */
+    /* ESC ] 52 ; c ; <base64> BEL */
+    size_t b64len = strlen(b64), seqlen = 8 + b64len;
     char *seq = malloc(seqlen + 1);
-    snprintf(seq, seqlen + 1, "\x1b]52;c;%s\x07", b64);
+    memcpy(seq, "\x1b]52;c;", 7);
+    memcpy(seq + 7, b64, b64len);
+    seq[seqlen - 1] = '\a';
+    seq[seqlen] = '\0';
     writeAll(STDOUT_FILENO, seq, seqlen);
     free(seq);
     free(b64);
@@ -126,7 +139,7 @@ void editorCopySelection(void) {
  * Searches stdin for the literal prefix "\x1b]52;c;" so that everything
  * before it — interleaved mouse events, tmux DCS passthrough wrappers, etc.
  * — is consumed and never leaks into editorReadKey. */
-static char *editorReadClipboard(int *outlen) {
+static char *editorReadClipboard(size_t *outlen) {
     unsigned char ch;
 
     /* Drain anything already buffered in stdin. */
@@ -185,8 +198,8 @@ static char *editorReadClipboard(int *outlen) {
 }
 
 /* Inserts text at cursor, splitting on newlines. */
-static void editorPasteText(const char *text, int len) {
-    for (int i = 0; i < len; i++) {
+static void editorPasteText(const char *text, size_t len) {
+    for (size_t i = 0; i < len; i++) {
         if (text[i] == '\n')
             editorInsertNewline();
         else
@@ -196,7 +209,7 @@ static void editorPasteText(const char *text, int len) {
 
 /* Pastes from system clipboard (OSC 52), falling back to internal clipboard. */
 void editorPaste(void) {
-    int len = 0;
+    size_t len = 0;
     char *text = editorReadClipboard(&len);
     if (text) {
         free(E.clipboard);

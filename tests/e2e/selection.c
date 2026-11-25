@@ -195,3 +195,51 @@ TEST(double_click_drag_extends_by_words) {
     CHECK_STR(q->scr.clipboard, "one two three");
     qquit(q);
 }
+
+TEST(click_past_column_223) {
+    /* The X10 mouse encoding has one byte per coordinate and stops at 223;
+     * the SGR encoding has none of that limit. */
+    char line[302];
+    for (int i = 0; i < 300; i++) line[i] = 'a' + i % 26;
+    strcpy(line + 300, "\n");
+    qopts o = {.rows = 10, .cols = 260};
+    quip *q = qstart_opts("a.txt", line, &o);
+    qclick(q, 1, 250);
+    CHECK_INT(q->scr.x, 249);
+    CHECK(strstr(qstatus(q), " 1:246") != NULL);
+    qpress(q, 1, 240);
+    qdrag(q, 1, 255);
+    qrelease(q, 1, 255);
+    CHECK(strstr(qstatus(q), "15 selected") != NULL);
+    qquit(q);
+}
+
+TEST(x10_mouse_reports_still_work) {
+    /* A terminal that ignores the request for SGR reports keeps sending
+     * X10 ones: ESC [ M, then button, column and row, each plus 32. */
+    quip *q = qstart("a.txt", "hello world\n");
+    qsend(q, "\x1b[M\x20\x2b\x21", 6, 1); /* left press, column 11, row 1 */
+    qsend(q, "\x1b[M\x23\x2b\x21", 6, 1); /* release */
+    CHECK_INT(q->scr.x, 10);
+    qquit(q);
+}
+
+TEST(huge_copy_stays_out_of_the_terminal_clipboard) {
+    /* 17 MB: past the most quip sends the terminal in OSC 52. The copy
+     * still goes to quip's own clipboard, and the status bar says so. */
+    int lines = 170000;
+    char *text = malloc((size_t)lines * 100 + 1);
+    for (int i = 0; i < lines; i++) {
+        memset(text + 100 * i, 'a' + i % 26, 99);
+        text[100 * i + 99] = '\n';
+    }
+    text[(size_t)lines * 100] = '\0';
+    quip *q = qstart("a.txt", text);
+    free(text);
+    qkey(q, K_SHIFT_CTRL_DOWN);
+    qkey(q, K_CTRL_C);
+    CHECK(strstr(qmessage(q), "Copied 16999999 bytes, too many for the terminal's clipboard") !=
+          NULL);
+    CHECK(q->scr.clipboard == NULL);
+    qquit(q);
+}

@@ -131,9 +131,9 @@ static void set_env(const char *dir) {
      * prints "nano zone abandoned" to the terminal at startup. */
     setenv("MallocNanoZone", "0", 1);
     /* Sanitizer reports go to files, not the terminal, and fail the test. */
-    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
     setenv("ASAN_OPTIONS", buf, 1);
-    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
     setenv("UBSAN_OPTIONS", buf, 1);
 }
 
@@ -148,6 +148,7 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     mkdirs(q->dir);
     if (content) qwrite(q, file, content);
     for (int i = 0; o->files && o->files[i]; i += 2) qwrite(q, o->files[i], o->files[i + 1]);
+    if (o->setup) o->setup(q);
     const char *t = getenv("QUIP_FRAME_TIMEOUT_MS");
     q->timeout_ms = t ? atoi(t) : 10000;
     q->lenient = o->lenient;
@@ -156,7 +157,7 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
     screen_init(&q->scr, rows, cols);
     q->scr.reply = reply;
     q->scr.reply_ctx = q;
-    q->scr.answer_cursor = 1;
+    q->scr.answer_cursor = !o->no_cursor_reply;
     q->scr.answer_clipboard = 1;
 
     q->fd = posix_openpt(O_RDWR | O_NOCTTY);
@@ -200,6 +201,10 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o) {
         if (s > 2) close(s);
         close(q->fd);
         if (chdir(q->dir) == -1) _exit(126);
+        if (o->fsize_limit) {
+            struct rlimit rl = {(rlim_t)o->fsize_limit, (rlim_t)o->fsize_limit};
+            setrlimit(RLIMIT_FSIZE, &rl);
+        }
         set_env(q->dir);
         execv(bin, (char *const *)argv);
         _exit(127);
@@ -238,6 +243,17 @@ void qpump(quip *q, int ms) {
     long end = now_ms() + ms;
     while (now_ms() < end) {
         if (!pump_once(q, (int)(end - now_ms()))) break;
+    }
+}
+
+/* Once quip has exited, read everything it wrote until its side of the
+ * terminal is closed, so that no output is left unread. */
+static void drain(quip *q) {
+    long deadline = now_ms() + q->timeout_ms;
+    while (now_ms() < deadline) {
+        struct pollfd p = {q->fd, POLLIN, 0};
+        if (poll(&p, 1, 100) <= 0) break;
+        if (!pump_once(q, 0)) break;
     }
 }
 
@@ -306,17 +322,59 @@ void qsend(quip *q, const char *bytes, int len, int frames) {
 
 void qkey(quip *q, const char *seq) { qsend(q, seq, (int)strlen(seq), 1); }
 
+/* Length of the well-formed UTF-8 character at s (n bytes left), or 0. */
+static int utf8_len(const unsigned char *s, int n) {
+    int len = s[0] < 0x80                    ? 1
+              : s[0] >= 0xc2 && s[0] <= 0xdf ? 2
+              : s[0] >= 0xe0 && s[0] <= 0xef ? 3
+              : s[0] >= 0xf0 && s[0] <= 0xf4 ? 4
+                                             : 0;
+    if (len == 0 || len > n) return 0;
+    for (int i = 1; i < len; i++)
+        if ((s[i] & 0xc0) != 0x80) return 0;
+    if (len == 3 && s[0] == 0xe0 && s[1] < 0xa0) return 0;  /* overlong */
+    if (len == 3 && s[0] == 0xed && s[1] >= 0xa0) return 0; /* surrogate */
+    if (len == 4 && s[0] == 0xf0 && s[1] < 0x90) return 0;  /* overlong */
+    if (len == 4 && s[0] == 0xf4 && s[1] >= 0x90) return 0; /* past U+10FFFF */
+    return len;
+}
+
+int qtext_frames(const char *text, int n) {
+    const unsigned char *s = (const unsigned char *)text;
+    int frames = 0;
+    for (int i = 0; i < n; frames++) {
+        int len = utf8_len(s + i, n - i);
+        i += len ? len : 1;
+    }
+    return frames;
+}
+
 void qtype(quip *q, const char *text) {
     int n = (int)strlen(text);
     char *buf = malloc(n);
     for (int i = 0; i < n; i++) buf[i] = text[i] == '\n' ? '\r' : text[i];
-    qsend(q, buf, n, n);
+    qsend(q, buf, n, qtext_frames(buf, n));
     free(buf);
 }
 
+/* A mouse event as a terminal reports it: in the SGR encoding,
+ * ESC [ < button ; col ; row M (m for a release), once quip has asked for
+ * it with ?1006, else in the X10 encoding, a byte per coordinate, which
+ * cannot go past 223. */
 static void mouse(quip *q, int button, int row, int col) {
-    char seq[6] = {'\x1b', '[', 'M', (char)(32 + button), (char)(32 + col), (char)(32 + row)};
-    qsend(q, seq, 6, 1);
+    char seq[32];
+    int n;
+    if (q->scr.modes & MODE_MOUSE_SGR) {
+        int release = button == 3;
+        n = snprintf(seq, sizeof(seq), "\x1b[<%d;%d;%d%c", release ? 0 : button, col, row,
+                     release ? 'm' : 'M');
+    } else {
+        if (row > 223 || col > 223)
+            test_fail(__FILE__, __LINE__, "X10 mouse encoding cannot reach row %d col %d", row,
+                      col);
+        n = snprintf(seq, sizeof(seq), "\x1b[M%c%c%c", 32 + button, 32 + col, 32 + row);
+    }
+    qsend(q, seq, n, 1);
 }
 
 void qpress(quip *q, int row, int col) { mouse(q, 0, row, col); }
@@ -380,7 +438,7 @@ int qwait_exit(quip *q) {
         pump_once(q, 20);
         reap(q, 0);
     }
-    qpump(q, 20);
+    drain(q);
     return q->status;
 }
 
@@ -412,7 +470,7 @@ char *qstop(quip *q, int quit) {
     } else if (WEXITSTATUS(q->status) != 0) {
         snprintf(msg, sizeof(msg), "quip exited with status %d", WEXITSTATUS(q->status));
     }
-    qpump(q, 0);
+    if (q->exited) drain(q);
     if (q->scr.nerrors && !q->lenient && !msg[0])
         snprintf(msg, sizeof(msg), "unexpected terminal output: %s", q->scr.error);
     char *rep = sanitizer_report(q);

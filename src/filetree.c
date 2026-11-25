@@ -139,9 +139,9 @@ void ftBlankCell(struct abuf *ab) {
 
 /* Draw the sidebar cell for screen row 'y' into the append buffer. */
 void ftDrawSidebarRow(struct abuf *ab, int y) {
-    int W = E.ft_width - 1; /* Text columns; last column is the divider. */
-    char line[FT_WIDTH];
-    int n = 0;
+    int W = E.ft_width - 1;      /* Text columns; last column is the divider. */
+    char line[FT_WIDTH * 4 + 8]; /* Room for UTF-8 names: 4 bytes a column. */
+    int n = 0, cols = 0;         /* Bytes and screen columns in line. */
     int idx = E.ft_scroll + y;
     int has = (idx >= 0 && idx < E.ft_vcount);
     ftnode *node = has ? E.ft_vis[idx] : NULL;
@@ -153,19 +153,34 @@ void ftDrawSidebarRow(struct abuf *ab, int y) {
         while (n < indent && n < W) line[n++] = ' ';
         if (n < W) line[n++] = node->is_dir ? (node->expanded ? '-' : '+') : ' ';
         if (n < W) line[n++] = ' ';
-        const char *p = node->name;
-        while (*p && n < W) line[n++] = *p++;
-        if (*p && W > 0) line[W - 1] = '~'; /* name was truncated */
+        cols = n;
+        /* The name fits in whole characters; a cut one ends in '~'. File
+         * names may hold anything, so they are sanitized first. */
+        char name[FT_WIDTH * 4 + 1];
+        int len = snprintf(name, sizeof(name), "%s", node->name);
+        if (len >= (int)sizeof(name)) len = sizeof(name) - 1;
+        editorSanitize(name, len);
+        int w, fit = textFit(name, len, W - cols, &w);
+        if (fit < len && W - cols > 0) fit = textFit(name, len, W - cols - 1, &w);
+        memcpy(line + n, name, fit);
+        n += fit;
+        cols += w;
+        if (fit < len && cols < W) {
+            line[n++] = '~';
+            cols++;
+        }
     }
-    while (n < W) line[n++] = ' ';
-    editorSanitize(line, W); /* File names may hold anything. */
+    while (cols < W) {
+        line[n++] = ' ';
+        cols++;
+    }
 
     int selected = (has && idx == E.ft_sel);
     if (selected)
         abAppendLit(ab, VT_REVERSE);
     else if (has && node->is_dir)
         abAppendLit(ab, VT_BOLD_BLUE);
-    abAppend(ab, line, W);
+    abAppend(ab, line, n);
     if (selected || (has && node->is_dir)) abAppendLit(ab, VT_RESET);
     abAppendLit(ab, "|");
 }

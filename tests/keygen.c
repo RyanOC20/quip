@@ -31,6 +31,10 @@ static const struct {
     {"a.sh", "#!/bin/sh\necho \"$HOME\" # c\nx=${#arr}; [ -f a ] && echo 'q'\n"},
     {"a.ml", "let x = (* a (* b *) *) 1\nlet s = {id|q|id} and c = 'a'\n"},
     {"a.md", "# Title\n\nSome *text* <!-- c -->\n"},
+    {"wide.txt", "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\tx e\xcc\x81 \xf0\x9f\x98\x80 \xff\xfe\n"
+                 "\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97"
+                 "\xa5\xe6\x97\xa5"
+                 "\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5 ab\n\tx\xc3\xa9\n"},
     {"lines.txt", NULL}, /* numbered lines, filled in below */
 };
 
@@ -48,6 +52,8 @@ static const char *const keys[] = {
     K_CTRL_F, K_CTRL_E, K_CTRL_SLASH,
     "\x07", "\x04", "\x15", /* unbound Ctrl keys */
     "\xc3\xa9", "\xe6\x97\xa5", /* UTF-8 characters, sent whole */
+    "\xcc\x81", "\xf0\x9f\x98\x80", /* a combining mark, an emoji */
+    "\xff", /* a byte that is not UTF-8 */
 };
 // clang-format on
 
@@ -141,8 +147,10 @@ void kcase_subset(const kcase *c, const char *keep, kcase *out) {
 }
 
 /* Frames quip draws for a key: one per key it reads, and it reads an
- * escape sequence as one key but anything else byte by byte. */
-static int key_frames(const char *k) { return k[0] == '\x1b' ? 1 : (int)strlen(k); }
+ * escape sequence or a UTF-8 character as one key, but a stray byte alone. */
+static int key_frames(const char *k) {
+    return k[0] == '\x1b' ? 1 : qtext_frames(k, (int)strlen(k));
+}
 
 quip *kcase_run(const kcase *c, const qopts *base) {
     qopts o = base ? *base : (qopts){0};
