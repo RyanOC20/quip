@@ -151,8 +151,9 @@ int rowPrevCx(const erow *row, int cx) {
 }
 /* Insert a row at the specified position, shifting the other rows on the bottom
  * if required. */
-static void editorInsertRow(int at, char *s, size_t len) {
+static void editorInsertRow(int at, const char *s, size_t len) {
     if (at > E.numrows) return;
+    if (len > INT_MAX / 2) editorDie("Some line of the edited file is too long for quip", 0);
     if (E.numrows + 1 > E.rowcap) {
         E.rowcap = E.rowcap ? E.rowcap * 2 : 16;
         E.row = realloc(E.row, sizeof(erow) * E.rowcap);
@@ -201,13 +202,12 @@ void editorDelRow(int at) {
     if (at < E.numrows) editorUpdateSyntax(E.row + at);
 }
 
-/* Turn the editor rows into a single heap-allocated string.
- * Returns the pointer to the heap-allocated string and populate the
- * integer pointed by 'buflen' with the size of the string, escluding
- * the final nulterm. */
-char *editorRowsToString(int *buflen) {
+/* Turn the editor rows into a single heap-allocated string, each row ending
+ * in '\n', and store its length, not counting the final NUL, in *buflen.
+ * The document may be past 2 GB, so lengths are size_t. */
+char *editorRowsToString(size_t *buflen) {
     char *buf = NULL, *p;
-    int totlen = 0;
+    size_t totlen = 0;
     int j;
 
     /* Compute count of bytes */
@@ -339,7 +339,9 @@ int editorOpen(char *filename) {
     char *buf = malloc(cap);
     for (;;) {
         if (len == cap) buf = realloc(buf, cap *= 2);
-        ssize_t n = read(fd, buf + len, cap - len);
+        /* At most 1 GB a call: macOS refuses reads over INT_MAX bytes. */
+        size_t want = cap - len < (1u << 30) ? cap - len : (1u << 30);
+        ssize_t n = read(fd, buf + len, want);
         if (n == 0) break;
         if (n == -1) {
             if (errno == EINTR) continue;
@@ -377,7 +379,7 @@ int editorOpen(char *filename) {
 /* The text as it goes to disk: like editorRowsToString, but each line ends
  * the way the file's lines did, and the last one with nothing when the file
  * had no newline at its end. */
-static char *editorRowsToFile(int *buflen) {
+static char *editorRowsToFile(size_t *buflen) {
     if (!E.crlf && !E.noeol) return editorRowsToString(buflen);
     size_t total = 1;
     for (int j = 0; j < E.numrows; j++) total += E.row[j].size + 2;
@@ -390,7 +392,7 @@ static char *editorRowsToFile(int *buflen) {
         *p++ = '\n';
     }
     *p = '\0';
-    *buflen = (int)(p - buf);
+    *buflen = (size_t)(p - buf);
     return buf;
 }
 
@@ -416,7 +418,7 @@ static void editorSaveTarget(const char *path, char *out) {
 /* Rewrite the file at 'path' where it is. Writing first and cutting to size
  * after means a failure never leaves less of the file than before, but it
  * may leave a mix of old and new text. Returns 0 or an errno value. */
-static int editorWriteInPlace(const char *path, const char *buf, int len, int regular) {
+static int editorWriteInPlace(const char *path, const char *buf, size_t len, int regular) {
     int fd = open(path, O_WRONLY | O_CREAT, 0644);
     if (fd == -1) return errno;
     if (writeAll(fd, buf, len) == -1 ||
@@ -436,7 +438,7 @@ static int editorWriteInPlace(const char *path, const char *buf, int len, int re
  * quip may not create files in, a file with other hard links, which would
  * keep the old text, an owner quip cannot give the new file, or something
  * other than a regular file. Returns 0 or an errno value. */
-static int editorWriteFile(const char *path, const char *buf, int len, int *inplace) {
+static int editorWriteFile(const char *path, const char *buf, size_t len, int *inplace) {
     char target[PATH_MAX];
     editorSaveTarget(path, target);
     struct stat st;
@@ -498,7 +500,8 @@ in_place:
 
 /* Save the current file on disk. Return 0 on success, 1 on error. */
 int editorSave(void) {
-    int len, inplace;
+    size_t len;
+    int inplace;
     char *buf = editorRowsToFile(&len);
     int err = editorWriteFile(E.filename, buf, len, &inplace);
     free(buf);
@@ -507,7 +510,7 @@ int editorSave(void) {
         return 1;
     }
     E.dirty = 0;
-    editorSetStatusMessage("%d bytes written %s", len, inplace ? "in place" : "on disk");
+    editorSetStatusMessage("%zu bytes written %s", len, inplace ? "in place" : "on disk");
     return 0;
 }
 
@@ -526,14 +529,14 @@ void editorFreeAllRows(void) {
 
 /* Tear down the current rows and rebuild them from serialized 'text' (rows
  * separated by '\n'). Cursor/dirty state is set by the caller. */
-void editorRebuildRows(char *text, int len) {
+void editorRebuildRows(const char *text, size_t len) {
     editorFreeAllRows();
 
-    char *p = text;
-    int rem = len;
+    const char *p = text;
+    size_t rem = len;
     while (rem > 0) {
-        char *nl = memchr(p, '\n', rem);
-        int linelen = nl ? (int)(nl - p) : rem;
+        const char *nl = memchr(p, '\n', rem);
+        size_t linelen = nl ? (size_t)(nl - p) : rem;
         editorInsertRow(E.numrows, p, linelen);
         if (!nl) break;
         rem -= linelen + 1;

@@ -7,7 +7,8 @@
 int writeAll(int fd, const void *buf, size_t len) {
     const char *p = buf;
     while (len > 0) {
-        ssize_t n = write(fd, p, len);
+        /* At most 1 GB a call: macOS refuses writes over INT_MAX bytes. */
+        ssize_t n = write(fd, p, len < (1u << 30) ? len : (1u << 30));
         if (n == -1) {
             if (errno == EINTR) continue;
             return -1;

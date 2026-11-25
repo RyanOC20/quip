@@ -169,7 +169,7 @@ struct editorConfig {
     int unit_sr, unit_sc, unit_er, unit_ec; /* Word or line a multi-click
                                                picked: (sr,sc) up to (er,ec). */
     char *clipboard;                        /* Internal clipboard buffer (may contain '\n'). */
-    int clipboard_len;                      /* Byte count of clipboard contents. */
+    size_t clipboard_len;                   /* Byte count of clipboard contents. */
     int ft_open;                            /* File-tree sidebar visible? */
     int ft_width;                           /* Columns reserved for the sidebar (0 when closed). */
     int ft_focus;           /* 1 = keys drive the tree, 0 = keys drive the editor. */
@@ -273,7 +273,7 @@ void editorInsertBytes(const char *s, int len);
 void *growBuf(void *buf, int *cap, int need);
 void editorUpdateRow(erow *row);
 void editorDelRow(int at);
-char *editorRowsToString(int *buflen);
+char *editorRowsToString(size_t *buflen);
 void editorRowAppendString(erow *row, char *s, size_t len);
 void editorInsertChar(int c);
 void editorInsertNewline(void);
@@ -281,7 +281,7 @@ void editorDelChar(void);
 int editorOpen(char *filename);
 int editorSave(void);
 void editorFreeAllRows(void);
-void editorRebuildRows(char *text, int len);
+void editorRebuildRows(const char *text, size_t len);
 
 /* clipboard.c */
 void editorCopySelection(void);

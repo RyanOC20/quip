@@ -7,11 +7,11 @@
  * splice undoes it. 'undo_base' always holds the full text of the snapshot at
  * 'undo_cur', so any neighbouring snapshot is one splice away. */
 typedef struct editorSnapshot {
-    int pos;
+    size_t pos;
     char *old; /* bytes present in the previous snapshot's text */
-    int oldlen;
+    size_t oldlen;
     char *new; /* bytes present in this snapshot's text */
-    int newlen;
+    size_t newlen;
     int cx, cy, rowoff, coloff;
 } editorSnapshot;
 
@@ -23,11 +23,11 @@ static int undo_count = 0;
 static int undo_saved = -1;
 int undo_last_insert = 0;      /* Typing continues the current undo step. */
 static char *undo_base = NULL; /* Full serialized text of the snapshot at undo_cur. */
-static int undo_base_len = 0;
+static size_t undo_base_len = 0;
 
 /* A copy of the 'len' bytes at s + off, or NULL when len is 0 (s itself may
  * then be NULL, and pointer arithmetic on NULL is undefined). */
-static char *memdup(const char *s, int off, int len) {
+static char *memdup(const char *s, size_t off, size_t len) {
     if (len == 0) return NULL;
     char *d = malloc(len);
     memcpy(d, s + off, len);
@@ -36,9 +36,9 @@ static char *memdup(const char *s, int off, int len) {
 
 /* Produce src with bytes [pos, pos+rmlen) replaced by 'ins' (inslen bytes).
  * Returns a freshly allocated, NUL-terminated buffer; *outlen excludes NUL. */
-static char *editorSplice(const char *src, int srclen, int pos, int rmlen, const char *ins,
-                          int inslen, int *outlen) {
-    int nl = srclen - rmlen + inslen;
+static char *editorSplice(const char *src, size_t srclen, size_t pos, size_t rmlen, const char *ins,
+                          size_t inslen, size_t *outlen) {
+    size_t nl = srclen - rmlen + inslen;
     char *out = malloc(nl + 1);
     /* Either side may be NULL when empty, and memcpy from NULL is undefined
      * even for zero bytes. */
@@ -62,7 +62,7 @@ void editorPushSnapshot(void) {
      * right after an undo, or an edit that changed nothing) there is no new
      * step to record; only note where the cursor is, so that undoing the
      * coming edit brings the cursor back here. */
-    int curlen;
+    size_t curlen;
     char *cur = editorRowsToString(&curlen);
     if (undo_cur >= 0 && curlen == undo_base_len && memcmp(cur, undo_base, curlen) == 0) {
         editorSnapshot *t = &undo_hist[undo_cur];
@@ -98,8 +98,8 @@ void editorPushSnapshot(void) {
 
     /* Diff the document against the base (the text of the snapshot at
      * undo_cur), storing only the changed middle span. */
-    int minlen = (undo_base_len < curlen) ? undo_base_len : curlen;
-    int p = 0, s = 0;
+    size_t minlen = (undo_base_len < curlen) ? undo_base_len : curlen;
+    size_t p = 0, s = 0;
     while (p < minlen && undo_base[p] == cur[p]) p++;
     while (s < minlen - p && undo_base[undo_base_len - 1 - s] == cur[curlen - 1 - s]) s++;
 
@@ -125,7 +125,7 @@ void editorPushSnapshot(void) {
 /* Record the document as a step if it changed since the newest one, so
  * that the latest edits can be undone and then redone. */
 void editorCommitPending(void) {
-    int len;
+    size_t len;
     char *cur = editorRowsToString(&len);
     int same = len == undo_base_len && memcmp(cur, undo_base, len) == 0;
     free(cur);
@@ -141,7 +141,7 @@ void editorUndo(void) {
     }
     /* Reverse the delta at undo_cur to reconstruct the previous text. */
     editorSnapshot *e = &undo_hist[undo_cur];
-    int prevlen;
+    size_t prevlen;
     char *prev =
         editorSplice(undo_base, undo_base_len, e->pos, e->newlen, e->old, e->oldlen, &prevlen);
     free(undo_base);
@@ -168,7 +168,7 @@ void editorRedo(void) {
     undo_cur++;
     /* Apply the delta at undo_cur to reconstruct the next text. */
     editorSnapshot *e = &undo_hist[undo_cur];
-    int nextlen;
+    size_t nextlen;
     char *next =
         editorSplice(undo_base, undo_base_len, e->pos, e->oldlen, e->new, e->newlen, &nextlen);
     free(undo_base);
@@ -177,8 +177,9 @@ void editorRedo(void) {
 
     editorRebuildRows(undo_base, undo_base_len);
     /* The cursor goes to the end of the restored text. */
-    int end = e->pos + e->newlen, row = 0, col = 0;
-    for (int i = 0; i < end && i < undo_base_len; i++) {
+    size_t end = e->pos + e->newlen;
+    int row = 0, col = 0;
+    for (size_t i = 0; i < end && i < undo_base_len; i++) {
         if (undo_base[i] == '\n') {
             row++;
             col = 0;
