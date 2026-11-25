@@ -1,14 +1,21 @@
 /* Drawing the screen: text, gutter, sidebar and status bar. */
 #include "quip.h"
 
-/* Replace control characters in 's' with '?', one per byte. */
+/* Replace control characters in 's', and bytes that are not valid UTF-8,
+ * with '?', one per byte, so that the text is safe to print and its width
+ * is known. */
 void editorSanitize(char *s, int n) {
     int i = 0;
     while (i < n) {
         int k = editorCtrlLen(s, i, n);
         if (k == 0) {
-            i++;
-            continue;
+            uint32_t cp;
+            k = utf8Decode(s, i, n, &cp);
+            if (k) {
+                i += k;
+                continue;
+            }
+            k = 1;
         }
         while (k--) s[i++] = '?';
     }
@@ -373,8 +380,14 @@ void editorRefreshScreen(void) {
     if (E.ft_open) ftBlankCell(&ab); /* continue the divider under the panes */
     abAppendLit(&ab, VT_CLEAR_EOL);
     abAppendLit(&ab, VT_REVERSE);
-    char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d line%s %s", E.filename, E.numrows,
+    /* The file name takes 20 columns at most. It may hold anything. */
+    char name[64], status[160], rstatus[80];
+    int namelen = snprintf(name, sizeof(name), "%s", E.filename);
+    if (namelen >= (int)sizeof(name)) namelen = sizeof(name) - 1;
+    editorSanitize(name, namelen);
+    int cols;
+    namelen = textFit(name, namelen, 20, &cols);
+    int len = snprintf(status, sizeof(status), "%.*s - %d line%s %s", namelen, name, E.numrows,
                        E.numrows == 1 ? "" : "s", E.dirty ? "(modified)" : "");
     /* The cursor as line:column, both from 1, as compilers print them. */
     long selchars = editorSelCharCount();
@@ -382,16 +395,16 @@ void editorRefreshScreen(void) {
         selchars ? snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d", selchars, E.cy + 1,
                             editorCursorCharCol() + 1)
                  : snprintf(rstatus, sizeof(rstatus), "%d:%d", E.cy + 1, editorCursorCharCol() + 1);
-    if (len > statuscols) len = statuscols;
-    editorSanitize(status, len); /* The file name may hold anything. */
+    len = textFit(status, len, statuscols, &cols);
     abAppend(&ab, status, len);
-    while (len < statuscols) {
-        if (statuscols - len == rlen) {
+    /* Columns, not bytes, decide where the position goes. */
+    while (cols < statuscols) {
+        if (statuscols - cols == rlen) {
             abAppend(&ab, rstatus, rlen);
             break;
         } else {
             abAppendLit(&ab, " ");
-            len++;
+            cols++;
         }
     }
     abAppendLit(&ab, VT_RESET "\r\n");
@@ -401,7 +414,7 @@ void editorRefreshScreen(void) {
     abAppendLit(&ab, VT_CLEAR_EOL);
     int msglen = strlen(E.statusmsg);
     if (msglen && time(NULL) - E.statusmsg_time < 5)
-        abAppend(&ab, E.statusmsg, msglen <= statuscols ? msglen : statuscols);
+        abAppend(&ab, E.statusmsg, textFit(E.statusmsg, msglen, statuscols, &cols));
 
     /* Put the cursor at its current position. */
     if (E.ft_open && E.ft_focus) {

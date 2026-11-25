@@ -133,3 +133,17 @@ int textCell(const char *s, int i, int n, int col, int *len) {
     *len = k;
     return utf8Width(cp);
 }
+
+/* How many of the n bytes of 's' fit in 'maxcols' screen columns, in whole
+ * characters; the columns they take go in *cols. */
+int textFit(const char *s, int n, int maxcols, int *cols) {
+    int i = 0, col = 0, k;
+    while (i < n) {
+        int w = textCell(s, i, n, col, &k);
+        if (col + w > maxcols) break;
+        col += w;
+        i += k;
+    }
+    *cols = col;
+    return i;
+}

@@ -122,3 +122,25 @@ TEST(tree_focused_click_in_text_focuses_editor) {
     CHECK(strstr(qrow(q, 1), "|  1 int mXain;") != NULL);
     qquit(q);
 }
+
+TEST(tree_names_in_utf8_keep_the_divider_in_place) {
+    /* One name with a two byte letter, one of wide characters too long for
+     * the pane, which is cut on a character boundary and marked with '~'. */
+    const char *const files[] = {"caf\xc3\xa9.txt", "x\n",
+                                 "\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5"
+                                 "\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5"
+                                 "\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5\xe6\x97\xa5.txt",
+                                 "y\n", NULL};
+    qopts o = {.files = files};
+    quip *q = qstart_opts("a.txt", "x\n", &o);
+    qkey(q, K_CTRL_E);
+    int found = 0;
+    for (int row = 2; row <= 4; row++) {
+        CHECK_INT(qcell(q, row, 30)->cp, '|');
+        const char *s = side(q, row);
+        if (strstr(s, "caf\xc3\xa9.txt")) found |= 1;
+        if (strstr(s, "\xe6\x97\xa5~")) found |= 2;
+    }
+    CHECK_INT(found, 3);
+    qquit(q);
+}

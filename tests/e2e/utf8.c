@@ -176,3 +176,20 @@ TEST(typed_wide_character_is_one_frame) {
     check_saved(q, "a.txt", WIDE "x\n");
     qquit(q);
 }
+
+TEST(status_bar_fits_a_utf8_file_name) {
+    /* 12 wide characters: 24 columns, cut to the 20 the name may take. */
+    char name[12 * 3 + 5];
+    for (int i = 0; i < 12; i++) memcpy(name + 3 * i, WIDE, 3);
+    strcpy(name + 36, ".txt");
+    quip *q = qstart(name, "x\n");
+    char want[64];
+    for (int i = 0; i < 10; i++) memcpy(want + 3 * i, WIDE, 3);
+    strcpy(want + 30, " - 1 line ");
+    const char *st = qstatus(q);
+    CHECK(strncmp(st, want, strlen(want)) == 0);
+    /* The position still ends in the last column. */
+    CHECK_INT(qcell(q, 23, 78)->cp, '1');
+    CHECK_INT(qcell(q, 23, 80)->cp, '1');
+    qquit(q);
+}

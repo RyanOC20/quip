@@ -334,6 +334,7 @@ int utf8Encode(char *out, uint32_t cp);
 int utf8Width(uint32_t cp);
 int editorCtrlLen(const char *s, int i, int n);
 int textCell(const char *s, int i, int n, int col, int *len);
+int textFit(const char *s, int n, int maxcols, int *cols);
 
 /* undo.c */
 void editorPushSnapshot(void);
