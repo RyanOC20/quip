@@ -115,7 +115,7 @@ If a file has a mistake, quip skips it and names the file and line on the status
 Testing
 ---
 
-The tests are C and POSIX only, like quip. They drive the real binary through a pseudo terminal and check what it draws, cell by cell, using a small terminal model (`tests/screen.c`) that fails on any escape sequence it does not know.
+The tests are C and POSIX only, like quip. [CONTRIBUTING.md](CONTRIBUTING.md) describes the source layout and how changes are checked. They drive the real binary through a pseudo terminal and check what it draws, cell by cell, using a small terminal model (`tests/screen.c`) that fails on any escape sequence it does not know.
 
 | Command | What it does |
 |---|---|
