@@ -114,15 +114,14 @@ static int editorFindBracketPair(int *brow, int *bcol, int *mrow, int *mcol) {
     int dir = o ? 1 : -1, depth = 0;
     *brow = y;
     *bcol = x;
-    /* The rows in locals, so the loop never goes back to the global E. */
-    const erow *rows = E.row, *r = row;
-    const int numrows = E.numrows;
+    /* The row in a local, so the loop never goes back to the global E. */
+    const erow *r = row;
     for (;;) {
         x += dir;
         while (x < 0 || x >= r->rsize) {
             y += dir;
-            if (y < 0 || y >= numrows) return BRACKET_UNMATCHED;
-            r = &rows[y];
+            if (y < 0 || y >= E.numrows) return BRACKET_UNMATCHED;
+            r = &E.row[y];
             x = dir > 0 ? 0 : r->rsize - 1;
         }
         char ch = r->render[x];
