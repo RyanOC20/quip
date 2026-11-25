@@ -246,6 +246,17 @@ void qpump(quip *q, int ms) {
     }
 }
 
+/* Once quip has exited, read everything it wrote until its side of the
+ * terminal is closed, so that no output is left unread. */
+static void drain(quip *q) {
+    long deadline = now_ms() + q->timeout_ms;
+    while (now_ms() < deadline) {
+        struct pollfd p = {q->fd, POLLIN, 0};
+        if (poll(&p, 1, 100) <= 0) break;
+        if (!pump_once(q, 0)) break;
+    }
+}
+
 static void reap(quip *q, int block) {
     if (q->exited || q->pid <= 0) return;
     int st;
@@ -427,7 +438,7 @@ int qwait_exit(quip *q) {
         pump_once(q, 20);
         reap(q, 0);
     }
-    qpump(q, 20);
+    drain(q);
     return q->status;
 }
 
@@ -459,7 +470,7 @@ char *qstop(quip *q, int quit) {
     } else if (WEXITSTATUS(q->status) != 0) {
         snprintf(msg, sizeof(msg), "quip exited with status %d", WEXITSTATUS(q->status));
     }
-    qpump(q, 0);
+    if (q->exited) drain(q);
     if (q->scr.nerrors && !q->lenient && !msg[0])
         snprintf(msg, sizeof(msg), "unexpected terminal output: %s", q->scr.error);
     char *rep = sanitizer_report(q);
