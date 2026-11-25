@@ -46,8 +46,11 @@ quip *qstart_opts(const char *file, const char *content, const qopts *o);
 void qkey(quip *q, const char *seq);
 /* Send bytes and wait for 'frames' new frames. */
 void qsend(quip *q, const char *bytes, int len, int frames);
-/* Type text, one frame per byte; '\n' is sent as Enter. */
+/* Type text, one frame per character; '\n' is sent as Enter. */
 void qtype(quip *q, const char *text);
+/* Frames quip draws for typed text: one per character, where a well-formed
+ * UTF-8 sequence is one character and any other byte is one of its own. */
+int qtext_frames(const char *text, int n);
 /* Mouse, in 1-based screen coordinates. A click is a press and a release. */
 void qpress(quip *q, int row, int col);
 void qrelease(quip *q, int row, int col);

@@ -99,6 +99,11 @@ fatal:
 static volatile sig_atomic_t winch_pending = 0;
 static void editorHandleResize(void);
 
+/* Bytes read past a UTF-8 lead byte that turned out not to complete it,
+ * handed out again, in order, before anything new is read. */
+static char key_pushback[4];
+static int key_npush = 0, key_pushpos = 0;
+
 /* Read one byte. Returns 1, or 0 when the read times out (raw mode waits
  * 0.1s) or fails. A signal arriving meanwhile does not end the wait. */
 static int readByte(int fd, char *c) {
@@ -108,12 +113,39 @@ static int readByte(int fd, char *c) {
     return n == 1;
 }
 
+/* Having read byte 'c', read the rest of the UTF-8 character it starts.
+ * Returns KEY_CHAR plus the code point, or 'c' alone when it does not start a
+ * valid sequence; the bytes read after it then come back as keys of their
+ * own. Typing a character inserts it whole, so a half-typed one is never on
+ * screen. */
+static int editorReadUtf8(int fd, char c) {
+    unsigned char b = (unsigned char)c;
+    if (b < 0xc2 || b > 0xf4) return c;
+    int need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : 2;
+    char u[4] = {c};
+    int n = 1;
+    while (n < need && readByte(fd, u + n)) {
+        n++;
+        if (((unsigned char)u[n - 1] & 0xc0) != 0x80) break;
+    }
+    uint32_t cp;
+    if (n == need && utf8Decode(u, 0, n, &cp) == n) return KEY_CHAR + (int)cp;
+    key_npush = n - 1;
+    key_pushpos = 0;
+    memcpy(key_pushback, u + 1, n - 1);
+    return c;
+}
+
 /* Read a key from the terminal put in raw mode, trying to handle
  * escape sequences. While waiting for the first byte it redraws whenever
  * the terminal is resized. */
 int editorReadKey(int fd) {
     char c, seq[5];
     for (;;) {
+        if (key_pushpos < key_npush) {
+            c = key_pushback[key_pushpos++];
+            break;
+        }
         ssize_t n = read(fd, &c, 1);
         if (n == 1) break;
         if (n == -1 && errno != EINTR && errno != EAGAIN)
@@ -251,7 +283,7 @@ int editorReadKey(int fd) {
             }
 
             break;
-        default: return c;
+        default: return editorReadUtf8(fd, c);
         }
     }
 }
@@ -359,11 +391,6 @@ void editorWatchResize(void) {
 static void editorHandleResize(void) {
     winch_pending = 0;
     updateWindowSize();
-    if (E.cy >= E.screenrows) {
-        E.rowoff += E.cy - (E.screenrows - 1);
-        E.cy = E.screenrows - 1;
-    }
     if (E.ft_scroll > E.ft_vcount) E.ft_scroll = E.ft_vcount ? E.ft_vcount - 1 : 0;
-    if (E.coloff < 0) E.coloff = 0;
     editorRefreshScreen();
 }

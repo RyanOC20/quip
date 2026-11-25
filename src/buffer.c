@@ -13,31 +13,39 @@ void *growBuf(void *buf, int *cap, int need) {
     return realloc(buf, nc);
 }
 
-/* Update the rendered version and the syntax highlight of a row. */
+/* Update the rendered version and the syntax highlight of a row. The
+ * rendered version is the text with each TAB turned into the spaces up to
+ * the next tab stop, so that 'render' and 'hl' line up byte for byte. */
 void editorUpdateRow(erow *row) {
-    unsigned int tabs = 0, nonprint = 0;
-    int j, idx;
+    int tabs = 0, j, idx;
 
-    /* Create a version of the row we can directly print on the screen,
-     * respecting tabs, substituting non printable characters with '?'. */
     for (j = 0; j < row->size; j++)
         if (row->chars[j] == TAB) tabs++;
 
-    unsigned long long allocsize =
-        (unsigned long long)row->size + tabs * QUIP_TAB_STOP + nonprint * 9 + 1;
+    unsigned long long allocsize = (unsigned long long)row->size + tabs * QUIP_TAB_STOP + 1;
     if (allocsize > UINT32_MAX) {
         editorDie("Some line of the edited file is too long for quip", 0);
     }
 
-    row->render =
-        growBuf(row->render, &row->render_cap, row->size + tabs * QUIP_TAB_STOP + nonprint * 9 + 1);
-    idx = 0;
-    for (j = 0; j < row->size; j++) {
-        if (row->chars[j] == TAB) {
-            do row->render[idx++] = ' ';
-            while (idx % QUIP_TAB_STOP != 0);
-        } else {
-            row->render[idx++] = row->chars[j];
+    row->render = growBuf(row->render, &row->render_cap, row->size + tabs * QUIP_TAB_STOP + 1);
+    if (tabs == 0) {
+        memcpy(row->render, row->chars, row->size);
+        idx = row->size;
+    } else {
+        /* Tab stops count screen columns, which wide characters make
+         * differ from bytes. */
+        int col = 0, k;
+        idx = 0;
+        for (j = 0; j < row->size; j += k) {
+            int w = textCell(row->chars, j, row->size, col, &k);
+            if (row->chars[j] == TAB) {
+                memset(row->render + idx, ' ', w);
+                idx += w;
+            } else {
+                memcpy(row->render + idx, row->chars + j, k);
+                idx += k;
+            }
+            col += w;
         }
     }
     row->rsize = idx;
@@ -47,6 +55,100 @@ void editorUpdateRow(erow *row) {
     editorUpdateSyntax(row);
 }
 
+/* Positions in a row come in three kinds: a byte offset in 'chars' (cx),
+ * a byte offset in 'render' (ridx), and a screen column counted from the
+ * start of the line (rx). They differ by TABs, by UTF-8 sequences, which
+ * are several bytes, and by wide characters, which take two columns. */
+
+/* Screen column where byte 'cx' of 'row' is drawn. Past the end of the line
+ * (a parked cursor) each byte counts as one more column. */
+int rowCxToRx(const erow *row, int cx) {
+    int rx = 0, i = 0, k;
+    while (i < cx && i < row->size) {
+        rx += textCell(row->chars, i, row->size, rx, &k);
+        i += k;
+    }
+    if (cx > i) rx += cx - i;
+    return rx;
+}
+
+/* Byte offset of the character drawn at screen column 'rx': the one that
+ * covers it, or the end of the line when rx is past it. Zero width
+ * characters go with the character before them. */
+int rowRxToCx(const erow *row, int rx) {
+    int col = 0, i = 0, k;
+    while (i < row->size) {
+        int w = textCell(row->chars, i, row->size, col, &k);
+        if (w && col + w > rx) break;
+        col += w;
+        i += k;
+    }
+    return i;
+}
+
+/* Offset in 'render' of byte 'cx' of 'row'. */
+int rowCxToRidx(const erow *row, int cx) {
+    int rx = 0, ridx = 0, i = 0, k;
+    while (i < cx && i < row->size) {
+        int w = textCell(row->chars, i, row->size, rx, &k);
+        ridx += row->chars[i] == TAB ? w : k;
+        rx += w;
+        i += k;
+    }
+    return ridx;
+}
+
+/* Inverse of rowCxToRidx: the byte in 'chars' rendered at 'ridx'. An
+ * offset inside the spaces of a TAB lands just after it. */
+int rowRidxToCx(const erow *row, int ridx) {
+    int rx = 0, r = 0, i = 0, k;
+    while (i < row->size && r < ridx) {
+        int w = textCell(row->chars, i, row->size, rx, &k);
+        r += row->chars[i] == TAB ? w : k;
+        rx += w;
+        i += k;
+    }
+    return i;
+}
+
+/* Cells the character at byte 'i' of 'row' takes; 0 for a combining mark. */
+static int rowCellsAt(const erow *row, int i) {
+    int k;
+    return textCell(row->chars, i, row->size, 0, &k);
+}
+
+/* Start of the character that ends at byte 'cx': a whole UTF-8 sequence,
+ * or a single byte when the bytes before cx are not a valid one. */
+static int rowCharBefore(const erow *row, int cx) {
+    int i = cx - 1, lim = cx > 4 ? cx - 4 : 0;
+    while (i > lim && ((unsigned char)row->chars[i] & 0xc0) == 0x80) i--;
+    uint32_t cp;
+    int k = utf8Decode(row->chars, i, row->size, &cp);
+    return (k && i + k == cx) ? i : cx - 1;
+}
+
+/* Where the cursor goes from 'cx' when it moves one character right or
+ * left: over a whole UTF-8 sequence, and over any combining marks that
+ * follow it, so that it never lands inside what shows as one character. */
+int rowNextCx(const erow *row, int cx) {
+    if (cx >= row->size) return cx;
+    int k;
+    textCell(row->chars, cx, row->size, 0, &k);
+    cx += k;
+    while (cx < row->size && rowCellsAt(row, cx) == 0) {
+        textCell(row->chars, cx, row->size, 0, &k);
+        cx += k;
+    }
+    return cx;
+}
+
+int rowPrevCx(const erow *row, int cx) {
+    if (cx > row->size) return row->size;
+    if (cx <= 0) return 0;
+    int i = rowCharBefore(row, cx);
+    while (i > 0 && rowCellsAt(row, i) == 0) i = rowCharBefore(row, i);
+    return i;
+}
 /* Insert a row at the specified position, shifting the other rows on the bottom
  * if required. */
 static void editorInsertRow(int at, char *s, size_t len) {
@@ -124,30 +226,6 @@ char *editorRowsToString(int *buflen) {
     return buf;
 }
 
-/* Insert a character at the specified position in a row, moving the remaining
- * chars on the right if needed. */
-static void editorRowInsertChar(erow *row, int at, int c) {
-    if (at > row->size) {
-        /* Pad the string with spaces if the insert location is outside the
-         * current length by more than a single character. */
-        int padlen = at - row->size;
-        /* In the next line +2 means: new char and null term. */
-        row->chars = growBuf(row->chars, &row->chars_cap, row->size + padlen + 2);
-        memset(row->chars + row->size, ' ', padlen);
-        row->chars[row->size + padlen + 1] = '\0';
-        row->size += padlen + 1;
-    } else {
-        /* If we are in the middle of the string just make space for 1 new
-         * char plus the (already existing) null term. */
-        row->chars = growBuf(row->chars, &row->chars_cap, row->size + 2);
-        memmove(row->chars + at + 1, row->chars + at, row->size - at + 1);
-        row->size++;
-    }
-    row->chars[at] = c;
-    editorUpdateRow(row);
-    E.dirty++;
-}
-
 /* Append the string 's' at the end of a row */
 void editorRowAppendString(erow *row, char *s, size_t len) {
     row->chars = growBuf(row->chars, &row->chars_cap, row->size + len + 1);
@@ -158,107 +236,84 @@ void editorRowAppendString(erow *row, char *s, size_t len) {
     E.dirty++;
 }
 
-/* Delete the character at offset 'at' from the specified row. */
-static void editorRowDelChar(erow *row, int at) {
-    if (row->size <= at) return;
-    memmove(row->chars + at, row->chars + at + 1, row->size - at);
-    row->size--;
+/* Remove the 'len' bytes at 'at' from 'row'. The caller updates the row. */
+void editorRowDelRange(erow *row, int at, int len) {
+    memmove(row->chars + at, row->chars + at + len, row->size - at - len + 1);
+    row->size -= len;
+}
+
+/* Insert the 'len' bytes of 's' at 'at' in 'row'. The caller updates it. */
+void editorRowInsRange(erow *row, int at, const char *s, int len) {
+    row->chars = growBuf(row->chars, &row->chars_cap, row->size + len + 1);
+    memmove(row->chars + at + len, row->chars + at, row->size - at + 1);
+    memcpy(row->chars + at, s, len);
+    row->size += len;
+}
+
+/* Insert 'len' bytes at the cursor and move the cursor past them. A cursor
+ * on the line after the last one first gets that line created, and one past
+ * the end of its line gets spaces up to it. */
+void editorInsertBytes(const char *s, int len) {
+    while (E.numrows <= E.cy) editorInsertRow(E.numrows, "", 0);
+    erow *row = &E.row[E.cy];
+    while (row->size < E.cx) editorRowInsRange(row, row->size, " ", 1);
+    editorRowInsRange(row, E.cx, s, len);
     editorUpdateRow(row);
+    E.cx += len;
     E.dirty++;
 }
 
-/* Insert the specified char at the current prompt position. */
+/* Insert the byte 'c' at the cursor. */
 void editorInsertChar(int c) {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    /* If the row where the cursor is currently located does not exist in our
-     * logical representaion of the file, add enough empty rows as needed. */
-    if (!row) {
-        while (E.numrows <= filerow) editorInsertRow(E.numrows, "", 0);
-    }
-    row = &E.row[filerow];
-    editorRowInsertChar(row, filecol, c);
-    if (E.cx == E.screencols - 1)
-        E.coloff++;
-    else
-        E.cx++;
-    E.dirty++;
+    char b = (char)c;
+    editorInsertBytes(&b, 1);
 }
 
 /* Inserting a newline is slightly complex as we have to handle inserting a
  * newline in the middle of a line, splitting the line as needed. */
 void editorInsertNewline(void) {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    if (!row) {
-        if (filerow == E.numrows) {
-            editorInsertRow(filerow, "", 0);
-            goto fixcursor;
+    if (E.cy >= E.numrows) {
+        if (E.cy > E.numrows) return;
+        editorInsertRow(E.cy, "", 0);
+    } else {
+        erow *row = &E.row[E.cy];
+        /* Past the end of the line counts as just after its last char. */
+        int col = E.cx < row->size ? E.cx : row->size;
+        if (col == 0) {
+            editorInsertRow(E.cy, "", 0);
+        } else {
+            /* We are in the middle of a line. Split it between two rows. */
+            editorInsertRow(E.cy + 1, row->chars + col, row->size - col);
+            row = &E.row[E.cy];
+            row->chars[col] = '\0';
+            row->size = col;
+            editorUpdateRow(row);
         }
-        return;
     }
-    /* If the cursor is over the current line size, we want to conceptually
-     * think it's just over the last character. */
-    if (filecol >= row->size) filecol = row->size;
-    if (filecol == 0) {
-        editorInsertRow(filerow, "", 0);
-    } else {
-        /* We are in the middle of a line. Split it between two rows. */
-        editorInsertRow(filerow + 1, row->chars + filecol, row->size - filecol);
-        row = &E.row[filerow];
-        row->chars[filecol] = '\0';
-        row->size = filecol;
-        editorUpdateRow(row);
-    }
-fixcursor:
-    if (E.cy == E.screenrows - 1) {
-        E.rowoff++;
-    } else {
-        E.cy++;
-    }
+    E.cy++;
     E.cx = 0;
-    E.coloff = 0;
 }
 
-/* Delete the char at the current prompt position. */
+/* Delete the character before the cursor, joining the line to the one above
+ * when the cursor is at its start. A UTF-8 sequence goes as a whole. */
 void editorDelChar(void) {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-    if (!row || (filecol == 0 && filerow == 0)) return;
-    if (filecol == 0) {
-        /* Handle the case of column 0, we need to move the current line
-         * on the right of the previous one. */
-        filecol = E.row[filerow - 1].size;
-        editorRowAppendString(&E.row[filerow - 1], row->chars, row->size);
-        editorDelRow(filerow);
-        row = NULL;
-        if (E.cy == 0)
-            E.rowoff--;
-        else
-            E.cy--;
-        E.cx = filecol;
-        if (E.cx >= E.screencols) {
-            int shift = (E.screencols - E.cx) + 1;
-            E.cx -= shift;
-            E.coloff += shift;
-        }
+    if (E.cy >= E.numrows || (E.cx == 0 && E.cy == 0)) return;
+    erow *row = &E.row[E.cy];
+    if (E.cx == 0) {
+        int col = E.row[E.cy - 1].size;
+        editorRowAppendString(&E.row[E.cy - 1], row->chars, row->size);
+        editorDelRow(E.cy);
+        E.cy--;
+        E.cx = col;
     } else {
-        editorRowDelChar(row, filecol - 1);
-        if (E.cx == 0 && E.coloff)
-            E.coloff--;
-        else
-            E.cx--;
+        if (E.cx > row->size) E.cx = row->size;
+        int at = rowCharBefore(row, E.cx);
+        editorRowDelRange(row, at, E.cx - at);
+        editorUpdateRow(row);
+        E.cx = at;
     }
-    if (row) editorUpdateRow(row);
     E.dirty++;
 }
-
 /* Load the specified program in the editor memory and returns 0 on success
  * or 1 on error. */
 int editorOpen(char *filename) {

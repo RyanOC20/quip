@@ -126,7 +126,7 @@ bench: quip bench/bench
 # ------------------------------------------------------------------ Style
 
 CLANG_FORMAT ?= clang-format
-FORMAT_SRC = $(SRC) src/all.c $(HDR) $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c)
+FORMAT_SRC = $(SRC) src/all.c $(HDR) $(wildcard tests/*.c tests/*.h tests/e2e/*.c bench/*.c tools/*.c)
 
 format:
 	$(CLANG_FORMAT) -i $(FORMAT_SRC)

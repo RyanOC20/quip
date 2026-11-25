@@ -2,6 +2,7 @@
 #include "quip.h"
 
 int editorIsSeparator(int c) {
+    c = (unsigned char)c; /* Callers pass plain chars, negative past ASCII. */
     return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];", c) != NULL;
 }
 

@@ -306,11 +306,38 @@ void qsend(quip *q, const char *bytes, int len, int frames) {
 
 void qkey(quip *q, const char *seq) { qsend(q, seq, (int)strlen(seq), 1); }
 
+/* Length of the well-formed UTF-8 character at s (n bytes left), or 0. */
+static int utf8_len(const unsigned char *s, int n) {
+    int len = s[0] < 0x80                    ? 1
+              : s[0] >= 0xc2 && s[0] <= 0xdf ? 2
+              : s[0] >= 0xe0 && s[0] <= 0xef ? 3
+              : s[0] >= 0xf0 && s[0] <= 0xf4 ? 4
+                                             : 0;
+    if (len == 0 || len > n) return 0;
+    for (int i = 1; i < len; i++)
+        if ((s[i] & 0xc0) != 0x80) return 0;
+    if (len == 3 && s[0] == 0xe0 && s[1] < 0xa0) return 0;  /* overlong */
+    if (len == 3 && s[0] == 0xed && s[1] >= 0xa0) return 0; /* surrogate */
+    if (len == 4 && s[0] == 0xf0 && s[1] < 0x90) return 0;  /* overlong */
+    if (len == 4 && s[0] == 0xf4 && s[1] >= 0x90) return 0; /* past U+10FFFF */
+    return len;
+}
+
+int qtext_frames(const char *text, int n) {
+    const unsigned char *s = (const unsigned char *)text;
+    int frames = 0;
+    for (int i = 0; i < n; frames++) {
+        int len = utf8_len(s + i, n - i);
+        i += len ? len : 1;
+    }
+    return frames;
+}
+
 void qtype(quip *q, const char *text) {
     int n = (int)strlen(text);
     char *buf = malloc(n);
     for (int i = 0; i < n; i++) buf[i] = text[i] == '\n' ? '\r' : text[i];
-    qsend(q, buf, n, n);
+    qsend(q, buf, n, qtext_frames(buf, n));
     free(buf);
 }
 

@@ -1,12 +1,18 @@
 /* Keys and mouse: cursor motion, selection, editing commands and the key dispatcher. */
 #include "quip.h"
 
+/* The row under the cursor, or NULL on the line after the last. */
+static erow *editorCursorRow(void) { return E.cy < E.numrows ? &E.row[E.cy] : NULL; }
+
+/* Screen column of the cursor, counted from the start of its line. */
+static int editorCursorRx(void) {
+    erow *row = editorCursorRow();
+    return row ? rowCxToRx(row, E.cx) : E.cx;
+}
+
 /* Insert spaces up to the next tab stop instead of a TAB character. */
 static void editorInsertTab(void) {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    int rcol = filerow < E.numrows ? editorCharToRenderCol(&E.row[filerow], filecol) : 0;
-    int n = QUIP_TAB_STOP - (rcol % QUIP_TAB_STOP);
+    int n = QUIP_TAB_STOP - (editorCursorRx() % QUIP_TAB_STOP);
     while (n--) editorInsertChar(' ');
 }
 
@@ -19,7 +25,7 @@ static void editorSelClear(void) { E.sel_active = 0; }
 int editorSelBounds(int *sr, int *sc, int *er, int *ec) {
     if (!E.sel_active || E.numrows == 0) return 0;
     int ar = E.sel_anchor_row, ac = E.sel_anchor_col;
-    int cr = E.rowoff + E.cy, cc = E.coloff + E.cx;
+    int cr = E.cy, cc = E.cx;
     if (ar < cr || (ar == cr && ac <= cc)) {
         *sr = ar;
         *sc = ac;
@@ -67,199 +73,118 @@ long editorSelCharCount(void) {
 static void editorSelSetAnchor(void) {
     if (!E.sel_active) {
         E.sel_active = 1;
-        E.sel_anchor_row = E.rowoff + E.cy;
-        E.sel_anchor_col = E.coloff + E.cx;
+        E.sel_anchor_row = E.cy;
+        E.sel_anchor_col = E.cx;
     }
 }
 
-void editorSetCol(int new_col) {
-    if (new_col < E.screencols) {
-        E.cx = new_col;
-        E.coloff = 0;
-    } else {
-        E.coloff = new_col - E.screencols + 1;
-        E.cx = E.screencols - 1;
-    }
-}
-
-/* Move the cursor to file position (row,col), scrolling it into view. */
+/* Move the cursor to file position (row,col). The view follows on the next
+ * redraw (editorScroll). */
 void editorSetCursorPos(int row, int col) {
-    if (row < E.rowoff) {
-        E.rowoff = row;
-        E.cy = 0;
-    } else if (row >= E.rowoff + E.screenrows) {
-        E.rowoff = row - E.screenrows + 1;
-        E.cy = E.screenrows - 1;
-    } else {
-        E.cy = row - E.rowoff;
-    }
-    editorSetCol(col);
+    E.cy = row;
+    E.cx = col;
+}
+
+/* Move the cursor to file row 'row', as near screen column 'rx' as that line
+ * allows: up and down keep the column the cursor is drawn in, whatever
+ * TABs and wide characters lie before it on either line. */
+static void editorMoveToRow(int row, int rx) {
+    E.cy = row;
+    E.cx = row < E.numrows ? rowRxToCx(&E.row[row], rx) : 0;
 }
 
 /* Handle cursor position change because arrow keys were pressed. */
 static void editorMoveCursor(int key) {
-    int filerow = E.rowoff + E.cy;
-    int filecol = E.coloff + E.cx;
-    int rowlen;
-    erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    erow *row = editorCursorRow();
 
     switch (key) {
     case ARROW_LEFT:
-        if (E.cx == 0) {
-            if (E.coloff) {
-                E.coloff--;
-            } else {
-                /* To the end of the previous line, scrolling up when the
-                 * cursor is on the top screen row. */
-                if (filerow > 0) editorSetCursorPos(filerow - 1, E.row[filerow - 1].size);
-            }
-        } else {
-            E.cx -= 1;
+        if (E.cx > 0) {
+            E.cx = row ? rowPrevCx(row, E.cx) : 0;
+        } else if (E.cy > 0) {
+            /* To the end of the previous line. */
+            E.cy--;
+            E.cx = E.row[E.cy].size;
         }
         break;
     case ARROW_RIGHT:
-        if (row && filecol < row->size) {
-            if (E.cx == E.screencols - 1) {
-                E.coloff++;
-            } else {
-                E.cx += 1;
-            }
-        } else if (row && filecol == row->size) {
+        if (row && E.cx < row->size) {
+            E.cx = rowNextCx(row, E.cx);
+        } else if (row) {
+            E.cy++;
             E.cx = 0;
-            E.coloff = 0;
-            if (E.cy == E.screenrows - 1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
-            }
         }
         break;
     case ARROW_UP:
-        if (E.cy == 0) {
-            if (E.rowoff) E.rowoff--;
-        } else {
-            E.cy -= 1;
-        }
+        if (E.cy > 0) editorMoveToRow(E.cy - 1, editorCursorRx());
         break;
     case ARROW_DOWN:
-        if (filerow < E.numrows) {
-            if (E.cy == E.screenrows - 1) {
-                E.rowoff++;
-            } else {
-                E.cy += 1;
-            }
-        }
+        if (E.cy < E.numrows) editorMoveToRow(E.cy + 1, editorCursorRx());
         break;
-    }
-    /* Fix cx if the current line has not enough chars. */
-    filerow = E.rowoff + E.cy;
-    filecol = E.coloff + E.cx;
-    row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    rowlen = row ? row->size : 0;
-    if (filecol > rowlen) {
-        E.cx -= filecol - rowlen;
-        /* The line ends left of the view: scroll back so it is visible. */
-        if (E.cx < 0) editorSetCol(rowlen);
     }
 }
 
 static void editorMoveWordRight(void) {
-    int filerow = E.rowoff + E.cy;
-    if (filerow >= E.numrows) return;
-    erow *row = &E.row[filerow];
-    int pos = E.coloff + E.cx;
+    erow *row = editorCursorRow();
+    if (!row) return;
+    int pos = E.cx;
 
     if (pos >= row->size) {
-        if (filerow + 1 < E.numrows) {
-            editorMoveCursor(ARROW_DOWN);
+        if (E.cy + 1 < E.numrows) {
+            E.cy++;
             E.cx = 0;
-            E.coloff = 0;
         }
         return;
     }
     while (pos < row->size && editorIsSeparator(row->chars[pos])) pos++;
     while (pos < row->size && !editorIsSeparator(row->chars[pos])) pos++;
-    editorSetCol(pos);
+    E.cx = pos;
 }
 
 static void editorMoveWordLeft(void) {
-    int filerow = E.rowoff + E.cy;
-    if (filerow >= E.numrows) return;
-    erow *row = &E.row[filerow];
-    int pos = E.coloff + E.cx;
+    erow *row = editorCursorRow();
+    if (!row) return;
+    int pos = E.cx;
 
     if (pos == 0) {
-        if (filerow > 0) {
-            editorMoveCursor(ARROW_UP);
-            editorSetCol(E.row[filerow - 1].size);
+        if (E.cy > 0) {
+            E.cy--;
+            E.cx = E.row[E.cy].size;
         }
         return;
     }
     pos--;
     while (pos > 0 && editorIsSeparator(row->chars[pos])) pos--;
     while (pos > 0 && !editorIsSeparator(row->chars[pos - 1])) pos--;
-    editorSetCol(pos);
+    E.cx = pos;
 }
 
+/* Home: to the first non-blank character, or to column 0 if already there. */
 static void editorMoveLineStart(void) {
-    int filerow = E.rowoff + E.cy;
-    if (filerow >= E.numrows) {
+    erow *row = editorCursorRow();
+    if (!row) {
         E.cx = 0;
-        E.coloff = 0;
         return;
     }
-    erow *row = &E.row[filerow];
-
     int indent = 0;
-    while (indent < row->size && isspace(row->chars[indent])) indent++;
-
-    int filecol = E.coloff + E.cx;
-    if (filecol != indent)
-        editorSetCol(indent);
-    else {
-        E.cx = 0;
-        E.coloff = 0;
-    }
+    while (indent < row->size && isspace((unsigned char)row->chars[indent])) indent++;
+    E.cx = E.cx != indent ? indent : 0;
 }
 
 static void editorMoveLineEnd(void) {
-    int filerow = E.rowoff + E.cy;
-    if (filerow >= E.numrows) return;
-    editorSetCol(E.row[filerow].size);
+    erow *row = editorCursorRow();
+    if (row) E.cx = row->size;
 }
 
 static void editorMoveFileStart(void) {
     E.cx = 0;
     E.cy = 0;
-    E.rowoff = 0;
-    E.coloff = 0;
 }
 
 static void editorMoveFileEnd(void) {
     if (E.numrows == 0) return;
-    int last = E.numrows - 1;
-    if (last < E.screenrows) {
-        E.cy = last;
-        E.rowoff = 0;
-    } else {
-        E.rowoff = last - E.screenrows + 1;
-        E.cy = E.screenrows - 1;
-    }
-    editorSetCol(E.row[last].size);
-}
-
-/* Remove 'len' chars at 'at' from 'row'. */
-static void editorRowDelRange(erow *row, int at, int len) {
-    memmove(row->chars + at, row->chars + at + len, row->size - at - len + 1);
-    row->size -= len;
-}
-
-/* Insert the 'len' chars of 's' at 'at' in 'row'. */
-static void editorRowInsRange(erow *row, int at, const char *s, int len) {
-    row->chars = growBuf(row->chars, &row->chars_cap, row->size + len + 1);
-    memmove(row->chars + at + len, row->chars + at, row->size - at + 1);
-    memcpy(row->chars + at, s, len);
-    row->size += len;
+    E.cy = E.numrows - 1;
+    E.cx = E.row[E.cy].size;
 }
 
 /* Where a cursor at 'col' lands after 'len' chars at 'at' are removed. */
@@ -313,8 +238,8 @@ static void editorToggleLineComment(int filerow) {
     const hldelim *scs = &E.syntax->line_comment;
     const hldelim *mcs = &E.syntax->block_start;
     const hldelim *mce = &E.syntax->block_end;
-    int col = E.coloff + E.cx;
-    int on_row = filerow == E.rowoff + E.cy;
+    int col = E.cx;
+    int on_row = filerow == E.cy;
 
     int indent = 0;
     while (indent < row->size && isspace((unsigned char)row->chars[indent])) indent++;
@@ -357,7 +282,7 @@ static void editorToggleLineComment(int filerow) {
     }
     editorUpdateRow(row);
     E.dirty++;
-    if (on_row) editorSetCol(col);
+    if (on_row) E.cx = col;
 }
 
 /* True if 'filerow' starts with at least one tab stop's worth of spaces. */
@@ -372,7 +297,7 @@ static int editorCanOutdent(int filerow) {
  * line. The cursor and a selection anchor on that line shift left with the
  * text, stopping at the start of the line. */
 static void editorOutdentLine(void) {
-    int filerow = E.rowoff + E.cy;
+    int filerow = E.cy;
     if (!editorCanOutdent(filerow)) return;
     erow *row = &E.row[filerow];
     int n = QUIP_TAB_STOP;
@@ -380,8 +305,7 @@ static void editorOutdentLine(void) {
     row->size -= n;
     editorUpdateRow(row);
     E.dirty++;
-    int col = E.coloff + E.cx;
-    editorSetCol(col > n ? col - n : 0);
+    E.cx = E.cx > n ? E.cx - n : 0;
     if (E.sel_active && E.sel_anchor_row == filerow)
         E.sel_anchor_col = E.sel_anchor_col > n ? E.sel_anchor_col - n : 0;
 }
@@ -411,27 +335,42 @@ static void editorDeleteSelection(void) {
     E.sel_active = 0;
 }
 
-/* Put the cursor as close to file column 'col' as possible without moving
- * the view. If the cursor's line ends left of the view, the cursor parks at
- * the left edge past the end of the line, and the next key that acts on it
- * snaps it back (see editorProcessKeypress). */
-static void editorPlaceCursorInView(int col) {
-    int filerow = E.rowoff + E.cy;
-    int len = (filerow < E.numrows) ? E.row[filerow].size : 0;
-    if (col > len) col = len;
-    if (col < E.coloff) col = E.coloff;
-    if (col > E.coloff + E.screencols - 1) col = E.coloff + E.screencols - 1;
-    E.cx = col - E.coloff;
+/* Put the cursor as near screen column 'rx' of its line as it can go
+ * without moving the view. If the line ends left of the view, the cursor
+ * parks at the left edge past the end of the line, and the next key that
+ * acts on it snaps it back (see editorProcessKeypress). */
+static void editorPlaceCursorInView(int rx) {
+    erow *row = editorCursorRow();
+    int size = row ? row->size : 0;
+    int width = row ? rowCxToRx(row, size) : 0;
+    int lo = E.coloff, hi = E.coloff + E.screencols - 1;
+    if (rx > width) rx = width;
+    if (rx < lo) rx = lo;
+    if (rx > hi) rx = hi;
+    if (rx >= width) {
+        E.cx = size + (rx - width);
+        return;
+    }
+    int cx = rowRxToCx(row, rx);
+    /* Not on a wide character cut by either edge, which would scroll. */
+    if (rowCxToRx(row, cx) < lo) cx = rowNextCx(row, cx);
+    int k;
+    if (cx < size && rowCxToRx(row, cx) + textCell(row->chars, cx, size, 0, &k) - 1 > hi) {
+        int prev = rowPrevCx(row, cx);
+        if (rowCxToRx(row, prev) >= lo) cx = prev;
+    }
+    E.cx = cx;
 }
 
 /* Scroll the view sideways by 'delta' columns, stopping once the end of the
  * longest line on screen is in view. The cursor keeps its column when it can
  * and is otherwise dragged along with the view. */
 static void editorScrollCols(int delta) {
-    int col = E.coloff + E.cx;
+    int rx = editorCursorRx();
     int maxlen = 0;
     for (int y = 0; y < E.screenrows && E.rowoff + y < E.numrows; y++) {
-        int len = E.row[E.rowoff + y].rsize;
+        erow *row = &E.row[E.rowoff + y];
+        int len = rowCxToRx(row, row->size);
         if (len > maxlen) maxlen = len;
     }
     int limit = maxlen - E.screencols + 1; /* +1 leaves room for the cursor */
@@ -439,38 +378,55 @@ static void editorScrollCols(int delta) {
     if (delta > 0 && coloff > limit) coloff = (limit > E.coloff) ? limit : E.coloff;
     if (coloff < 0) coloff = 0;
     E.coloff = coloff;
-    editorPlaceCursorInView(col);
+    editorPlaceCursorInView(rx);
+}
+
+/* Scroll the view up or down by 'delta' rows, as far as the file goes. The
+ * cursor keeps its place in the file while that stays on screen, and is
+ * otherwise dragged along with the view, keeping its column. */
+static void editorScrollRows(int delta) {
+    int max_rowoff = (E.numrows > E.screenrows) ? E.numrows - E.screenrows : 0;
+    int rowoff = E.rowoff + delta;
+    /* A view already past that (a search puts its match at the top) does
+     * not jump back. */
+    if (delta > 0 && rowoff > max_rowoff) rowoff = E.rowoff > max_rowoff ? E.rowoff : max_rowoff;
+    if (rowoff < 0) rowoff = 0;
+    E.rowoff = rowoff;
+    int rx = editorCursorRx();
+    int cy = E.cy;
+    if (cy < E.rowoff) cy = E.rowoff;
+    if (cy > E.rowoff + E.screenrows - 1) cy = E.rowoff + E.screenrows - 1;
+    if (cy != E.cy) editorMoveToRow(cy, rx);
+    editorPlaceCursorInView(editorCursorRx());
 }
 
 /* True if the cursor sits past the end of its line, which only a scroll can
  * cause. */
 static int editorCursorPastEnd(void) {
-    int filerow = E.rowoff + E.cy;
-    int len = (filerow < E.numrows) ? E.row[filerow].size : 0;
-    return E.coloff + E.cx > len;
+    erow *row = editorCursorRow();
+    return E.cx > (row ? row->size : 0);
 }
 
-/* Moves cursor to E.mouse_cx/cy, converting render column → file column.
- * A click below the last line lands at the end of the last line. */
+/* Move the cursor to the cell the mouse is on (E.mouse_cx/cy), or to the
+ * nearest character boundary: a click on the far half of a TAB or a wide
+ * character lands after it. A click below the last line lands at the end of
+ * the last line, and one left of the text (on the gutter, or a drag into
+ * the sidebar) at the left edge. */
 static void editorMouseSetCursor(void) {
-    if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows) E.cy = E.mouse_cy;
-    int last = E.numrows ? E.numrows - 1 : 0;
-    if (E.rowoff + E.cy > last) {
-        if (last < E.rowoff) E.rowoff = last;
-        E.cy = last - E.rowoff;
-        editorSetCol(E.numrows ? E.row[last].size : 0);
+    if (E.mouse_cy >= 0 && E.mouse_cy < E.screenrows) E.cy = E.rowoff + E.mouse_cy;
+    if (E.cy >= E.numrows) {
+        E.cy = E.numrows ? E.numrows - 1 : 0;
+        E.cx = E.numrows ? E.row[E.cy].size : 0;
         return;
     }
-    int text_cx = E.mouse_cx - E.ft_width - E.ln_width;       /* physical → text */
-    if (text_cx < 0 && E.mouse_cx >= E.ft_width) text_cx = 0; /* in gutter */
-    if (text_cx >= 0 && text_cx < E.screencols) {
-        int file_row = E.rowoff + E.cy;
-        if (file_row < E.numrows) {
-            editorSetCol(editorRenderToCharCol(&E.row[file_row], E.coloff + text_cx));
-        } else {
-            editorSetCol(0);
-        }
-    }
+    erow *row = &E.row[E.cy];
+    int text_cx = E.mouse_cx - E.ft_width - E.ln_width; /* physical → text */
+    if (text_cx < 0) text_cx = 0;
+    if (text_cx > E.screencols - 1) text_cx = E.screencols - 1;
+    int rx = E.coloff + text_cx;
+    int cx = rowRxToCx(row, rx);
+    if (cx < row->size && rowCxToRx(row, cx) < rx) cx = rowNextCx(row, cx);
+    E.cx = cx;
 }
 
 /* Character class for double-click word selection: a run of word
@@ -500,14 +456,15 @@ static void editorWordAt(erow *row, int col, int *start, int *end) {
 }
 
 /* File column of the character under the mouse, after editorMouseSetCursor.
- * That puts the cursor on the nearest boundary, which for a click inside a
- * TAB is just past it; step back so the TAB itself counts as clicked. */
+ * That puts the cursor on the nearest boundary, which for a click on the far
+ * half of a TAB or wide character is just past it; step back so that the
+ * character itself counts as clicked. */
 static int editorMouseCharCol(void) {
-    int filerow = E.rowoff + E.cy;
-    int col = E.coloff + E.cx;
-    if (filerow >= E.numrows || col == 0) return col;
-    int rcol = E.coloff + E.mouse_cx - E.ft_width - E.ln_width;
-    if (editorCharToRenderCol(&E.row[filerow], col) > rcol) col--;
+    int col = E.cx;
+    if (E.cy >= E.numrows || col == 0) return col;
+    erow *row = &E.row[E.cy];
+    int rx = E.coloff + E.mouse_cx - E.ft_width - E.ln_width;
+    if (rowCxToRx(row, col) > rx) col = rowPrevCx(row, col);
     return col;
 }
 
@@ -517,7 +474,7 @@ static int editorMouseCharCol(void) {
  * Moves the cursor to the mouse first. Returns 0 if there is no text. */
 static int editorMouseUnit(int clicks, int *sr, int *sc, int *er, int *ec) {
     editorMouseSetCursor();
-    int filerow = E.rowoff + E.cy;
+    int filerow = E.cy;
     if (filerow >= E.numrows) return 0;
     *sr = *er = filerow;
     if (clicks == 2) {
@@ -553,9 +510,8 @@ static void editorMouseSelectClickedUnit(void) {
 static void editorMouseSelectUnit(int clicks) {
     int sr, sc, er, ec;
     if (!editorMouseUnit(clicks, &sr, &sc, &er, &ec)) {
-        int row = E.rowoff + E.cy, col = E.coloff + E.cx;
-        sr = er = row;
-        sc = ec = col;
+        sr = er = E.cy;
+        sc = ec = E.cx;
     }
     E.unit_sr = sr;
     E.unit_sc = sc;
@@ -605,6 +561,7 @@ static int editorCountClick(void) {
  * is typing stuff on the terminal. */
 #define QUIP_QUIT_TIMES   3
 #define QUIP_HSCROLL_COLS 4 /* Columns moved per horizontal wheel step. */
+#define QUIP_VSCROLL_ROWS 3 /* Rows moved per vertical wheel step. */
 void editorProcessKeypress(int fd) {
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
@@ -655,8 +612,7 @@ void editorProcessKeypress(int fd) {
         case MOUSE_DRAG:
         case MOUSE_RELEASE: break;
         default: {
-            int filerow = E.rowoff + E.cy;
-            editorSetCol(filerow < E.numrows ? E.row[filerow].size : 0);
+            E.cx = E.cy < E.numrows ? E.row[E.cy].size : 0;
             break;
         }
         }
@@ -714,14 +670,14 @@ void editorProcessKeypress(int fd) {
         break;
     case CTRL_F: editorFind(fd); break;
     case CTRL_SLASH:
-        if (!editorCanToggleComment(E.rowoff + E.cy)) break;
+        if (!editorCanToggleComment(E.cy)) break;
         editorPushSnapshot();
         undo_last_insert = 0;
         editorSelClear();
-        editorToggleLineComment(E.rowoff + E.cy);
+        editorToggleLineComment(E.cy);
         break;
     case SHIFT_TAB: /* Shift-Tab — outdent the current line */
-        if (!editorCanOutdent(E.rowoff + E.cy)) break;
+        if (!editorCanOutdent(E.cy)) break;
         editorPushSnapshot();
         undo_last_insert = 0;
         editorOutdentLine();
@@ -757,8 +713,8 @@ void editorProcessKeypress(int fd) {
         }
         editorMouseSetCursor();
         E.sel_active = 1;
-        E.sel_anchor_row = E.rowoff + E.cy;
-        E.sel_anchor_col = E.coloff + E.cx;
+        E.sel_anchor_row = E.cy;
+        E.sel_anchor_col = E.cx;
         break;
     case MOUSE_DRAG:
         if (!E.sel_active) break;
@@ -772,34 +728,16 @@ void editorProcessKeypress(int fd) {
         if (E.click_count >= 2) break; /* keep the word/line selection */
         editorMouseSetCursor();
         /* If anchor == cursor the user just clicked; clear the selection. */
-        if (E.sel_anchor_row == E.rowoff + E.cy && E.sel_anchor_col == E.coloff + E.cx)
-            E.sel_active = 0;
+        if (E.sel_anchor_row == E.cy && E.sel_anchor_col == E.cx) E.sel_active = 0;
         break;
-    case SCROLL_UP: {
+    case SCROLL_UP:
         undo_last_insert = 0;
-        int file_row = E.rowoff + E.cy;
-        int new_rowoff = E.rowoff - 3;
-        if (new_rowoff < 0) new_rowoff = 0;
-        E.rowoff = new_rowoff;
-        E.cy = file_row - E.rowoff;
-        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
-        if (E.cy < 0) E.cy = 0;
-        editorPlaceCursorInView(E.coloff + E.cx);
+        editorScrollRows(-QUIP_VSCROLL_ROWS);
         break;
-    }
-    case SCROLL_DOWN: {
+    case SCROLL_DOWN:
         undo_last_insert = 0;
-        int file_row = E.rowoff + E.cy;
-        int max_rowoff = (E.numrows > E.screenrows) ? E.numrows - E.screenrows : 0;
-        int new_rowoff = E.rowoff + 3;
-        if (new_rowoff > max_rowoff) new_rowoff = max_rowoff;
-        E.rowoff = new_rowoff;
-        E.cy = file_row - E.rowoff;
-        if (E.cy >= E.screenrows) E.cy = E.screenrows - 1;
-        if (E.cy < 0) E.cy = 0;
-        editorPlaceCursorInView(E.coloff + E.cx);
+        editorScrollRows(QUIP_VSCROLL_ROWS);
         break;
-    }
     case SCROLL_LEFT:
         undo_last_insert = 0;
         editorScrollCols(-QUIP_HSCROLL_COLS);
@@ -810,22 +748,18 @@ void editorProcessKeypress(int fd) {
         break;
     case KEY_NULL: break;
     case PAGE_UP:
-    case PAGE_DOWN:
+    case PAGE_DOWN: {
         undo_last_insert = 0;
         editorSelClear();
-        if (c == PAGE_UP && E.cy != 0)
-            E.cy = 0;
-        else if (c == PAGE_DOWN && E.cy != E.screenrows - 1)
-            E.cy = E.screenrows - 1;
-        /* Not below the line after the last one, where Down stops too: a
-         * short file does not fill the screen. */
-        if (E.rowoff + E.cy > E.numrows) E.cy = E.numrows - E.rowoff;
-        if (E.cy < 0) E.cy = 0;
-        {
-            int times = E.screenrows;
-            while (times--) editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-        }
+        /* A screenful beyond the top or bottom line on screen, so the line
+         * at one edge ends up at the other, keeping the column. Not below
+         * the line after the last one, where Down stops too. */
+        int row = c == PAGE_UP ? E.rowoff - E.screenrows : E.rowoff + 2 * E.screenrows - 1;
+        if (row < 0) row = 0;
+        if (row > E.numrows) row = E.numrows;
+        editorMoveToRow(row, editorCursorRx());
         break;
+    }
 
     case ARROW_UP:
     case ARROW_DOWN:
@@ -945,17 +879,21 @@ void editorProcessKeypress(int fd) {
     default:
         /* Soft key codes are not text; never insert one as a byte. Nor
          * an unbound Ctrl key: it would put a control byte in the file. */
-        if (c >= ARROW_LEFT) break;
+        if (c >= ARROW_LEFT && c < KEY_CHAR) break;
         if (c >= 0 && c < 0x20 && c != TAB) break; /* UTF-8 bytes are < 0 */
         if (!undo_last_insert || E.sel_active) {
             editorPushSnapshot();
             undo_last_insert = 1;
         }
         if (E.sel_active) editorDeleteSelection();
-        if (c == TAB)
+        if (c == TAB) {
             editorInsertTab();
-        else
+        } else if (c >= KEY_CHAR) {
+            char u[4];
+            editorInsertBytes(u, utf8Encode(u, (uint32_t)(c - KEY_CHAR)));
+        } else {
             editorInsertChar(c);
+        }
         break;
     }
 

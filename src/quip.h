@@ -135,9 +135,12 @@ typedef struct hlcolor {
 } hlcolor;
 
 struct editorConfig {
-    int cx, cy;     /* Cursor x and y position in characters */
-    int rowoff;     /* Offset of row displayed. */
-    int coloff;     /* Offset of column displayed. */
+    int cx;         /* Cursor: byte offset in its row. Past the end of the line
+                       only while parked by a sideways scroll, see
+                       editorPlaceCursorInView; the excess counts as columns. */
+    int cy;         /* Cursor: file row, up to numrows (the line after the last). */
+    int rowoff;     /* First file row on screen. */
+    int coloff;     /* First screen column of text on screen. */
     int screenrows; /* Number of rows that we can show */
     int screencols; /* Number of text cols we can show (excludes sidebar/gutter). */
     int termcols;   /* Physical terminal width in columns. */
@@ -240,6 +243,11 @@ enum KEY_ACTION {
     SHIFT_TAB
 };
 
+/* editorReadKey returns a character typed as UTF-8, already assembled from
+ * its bytes, as KEY_CHAR plus its code point. A byte that does not start a
+ * valid sequence comes back on its own, as a negative char value. */
+#define KEY_CHAR 0x200000
+
 /* Language files loaded at startup (lang.c), and the first problem found in
  * them, shown on the status bar. */
 extern struct editorSyntax **HLDB;
@@ -248,6 +256,15 @@ extern char hl_load_error[80];
 extern int hl_load_errors;
 
 /* buffer.c */
+int rowCxToRx(const erow *row, int cx);
+int rowRxToCx(const erow *row, int rx);
+int rowCxToRidx(const erow *row, int cx);
+int rowRidxToCx(const erow *row, int ridx);
+int rowNextCx(const erow *row, int cx);
+int rowPrevCx(const erow *row, int cx);
+void editorRowDelRange(erow *row, int at, int len);
+void editorRowInsRange(erow *row, int at, const char *s, int len);
+void editorInsertBytes(const char *s, int len);
 void *growBuf(void *buf, int *cap, int need);
 void editorUpdateRow(erow *row);
 void editorDelRow(int at);
@@ -279,7 +296,6 @@ void editorFind(int fd);
 /* input.c */
 int editorSelBounds(int *sr, int *sc, int *er, int *ec);
 long editorSelCharCount(void);
-void editorSetCol(int new_col);
 void editorSetCursorPos(int row, int col);
 void editorProcessKeypress(int fd);
 
@@ -291,9 +307,8 @@ int editorLoadFile(const char *path);
 
 /* render.c */
 void editorSanitize(char *s, int n);
-int editorCharToRenderCol(erow *row, int char_col);
-int editorRenderToCharCol(erow *row, int rcol);
 void editorUpdateGeometry(void);
+void editorScroll(void);
 void editorRefreshScreen(void);
 void editorSetStatusMessage(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void editorClearStatusMessage(void);
@@ -312,6 +327,13 @@ int editorReadKey(int fd);
 int readByteTimeout(unsigned char *ch, int ms);
 void updateWindowSize(void);
 void editorWatchResize(void);
+
+/* utf8.c */
+int utf8Decode(const char *s, int i, int n, uint32_t *cp);
+int utf8Encode(char *out, uint32_t cp);
+int utf8Width(uint32_t cp);
+int editorCtrlLen(const char *s, int i, int n);
+int textCell(const char *s, int i, int n, int col, int *len);
 
 /* undo.c */
 void editorPushSnapshot(void);
