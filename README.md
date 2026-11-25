@@ -126,7 +126,7 @@ The tests are C and POSIX only, like quip. They drive the real binary through a 
 | `make bench` | Times loading, scrolling, typing and highlighting on large files, plus memory and binary size. `make bench BENCH_REF=master` compares against a git ref and fails on a slowdown |
 | `make format` | Formats the C sources with clang-format (`.clang-format`). `make check-format` only checks |
 
-CI runs the tests, the sanitizer tests and a short fuzz run on Linux and macOS with gcc and clang, with warnings as errors. It also benchmarks each change against its base and against quip before the 2026 rework, and checks the formatting.
+CI runs the tests, the sanitizer tests and a short fuzz run on Linux and macOS with gcc and clang, with warnings as errors. It also benchmarks each change against its base and against quip before the 2026 rework, failing when a figure is more than 10% slower (or the binary 15% bigger) on both Linux and macOS; on one machine alone, code layout can move a figure that much. It checks the formatting too.
 
 Kilo was written by Salvatore Sanfilippo aka antirez and is released
 under the BSD 2 clause license.

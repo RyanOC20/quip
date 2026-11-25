@@ -86,8 +86,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Shared runners are noisy, so a check that fails is run once more:
-      # a real regression fails both times.
+      # Each machine lists the figures that came out worse than allowed;
+      # bench-verdict fails only for a figure that is worse on both Linux and
+      # macOS, since on one machine code layout alone can move a figure 10%.
       - name: Speed and size against the base of this change
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
@@ -95,10 +96,47 @@ jobs:
           else
             base="${{ github.event.before }}"
           fi
-          make bench BENCH_REF="$base" || make bench BENCH_REF="$base"
+          mkdir -p results
+          bench/regressions.sh "$base" results/base.txt
 
       - name: Speed and size against the baseline
-        run: make bench BENCH_REF="$BASELINE_REF" || make bench BENCH_REF="$BASELINE_REF"
+        run: bench/regressions.sh "$BASELINE_REF" results/baseline.txt
+
+      - uses: actions/upload-artifact@v5
+        if: ${{ !matrix.optional }}
+        with:
+          name: bench-${{ matrix.os }}
+          path: results/
+
+  bench-verdict:
+    needs: bench
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every required benchmark ran
+        if: needs.bench.result != 'success'
+        run: exit 1
+
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: bench-*
+          path: results
+
+      - name: No figure worse on both Linux and macOS
+        run: |
+          fail=0
+          for against in base baseline; do
+            linux=results/bench-ubuntu-24.04/$against.txt
+            mac=results/bench-macos-15-intel/$against.txt
+            echo "Against the $against: Linux: $(paste -sd, "$linux"); macOS: $(paste -sd, "$mac")"
+            both=$(comm -12 "$linux" "$mac")
+            if [ -n "$both" ]; then
+              echo "::error::Worse on both Linux and macOS against the $against: $(echo "$both" | paste -sd, -)"
+              fail=1
+            fi
+          done
+          exit $fail
 
   format:
     runs-on: ubuntu-24.04
