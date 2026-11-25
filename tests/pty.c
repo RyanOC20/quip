@@ -131,9 +131,9 @@ static void set_env(const char *dir) {
      * prints "nano zone abandoned" to the terminal at startup. */
     setenv("MallocNanoZone", "0", 1);
     /* Sanitizer reports go to files, not the terminal, and fail the test. */
-    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:detect_leaks=0:abort_on_error=0", dir);
     setenv("ASAN_OPTIONS", buf, 1);
-    snprintf(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
+    path_fmt(buf, sizeof(buf), "log_path=%s/sanitizer:print_stacktrace=1:halt_on_error=1", dir);
     setenv("UBSAN_OPTIONS", buf, 1);
 }
 
