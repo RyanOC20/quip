@@ -70,17 +70,13 @@ jobs:
           ls "$RUNNER_TEMP/prefix/share/quip/langs/c.lang"
 
   bench:
-    name: bench ${{ matrix.os }}${{ matrix.optional && ' (optional)' || '' }}
+    name: bench ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-24.04, optional: false }
-          - { os: macos-15-intel, optional: false }
-          - { os: macos-15, optional: true }
+        os: [ubuntu-24.04, macos-15-intel]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -103,10 +99,30 @@ jobs:
         run: bench/regressions.sh "$BASELINE_REF" results/baseline.txt
 
       - uses: actions/upload-artifact@v5
-        if: ${{ !matrix.optional }}
         with:
           name: bench-${{ matrix.os }}
           path: results/
+
+  # Apple Silicon, when GitHub has a runner free. Its figures are shown
+  # but never block a change, and bench-verdict does not wait for it.
+  bench-apple-silicon:
+    name: bench macos-15 (optional)
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Speed and size against the base of this change
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          bench/regressions.sh "$base" /dev/null
 
   bench-verdict:
     needs: bench
