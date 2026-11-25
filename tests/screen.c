@@ -375,7 +375,17 @@ static void osc_dispatch(screen *s) {
     s->clipboard_len = o;
 }
 
+/* Longer than any terminal keeps; quip caps its clipboard writes well
+ * below this. */
+#define OSC_MAX (64 << 20)
+
 static void osc_add(screen *s, char c) {
+    if (s->osclen >= OSC_MAX) return; /* reported already; drop the rest */
+    if (s->osclen == OSC_MAX - 1) {
+        screen_error(s, "OSC longer than %d bytes", OSC_MAX);
+        s->osclen = OSC_MAX;
+        return;
+    }
     if (s->osclen + 2 > s->osccap) {
         s->osccap = s->osccap ? s->osccap * 2 : 256;
         s->osc = realloc(s->osc, s->osccap);

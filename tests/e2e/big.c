@@ -44,5 +44,11 @@ TEST(file_past_2gb_opens_edits_and_saves) {
     CHECK(f && fread(head, 1, 4, f) == 4);
     if (f) fclose(f);
     CHECK_STR(head, "x000");
+    /* Select everything and copy it. */
+    qkey(q, K_CTRL_UP);
+    qkey(q, K_SHIFT_CTRL_DOWN);
+    CHECK(strstr(qstatus(q), "2200000000 selected") != NULL);
+    qkey(q, K_CTRL_C);
+    qkey(q, K_ESC);
     qquit(q);
 }

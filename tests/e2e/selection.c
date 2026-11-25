@@ -223,3 +223,23 @@ TEST(x10_mouse_reports_still_work) {
     CHECK_INT(q->scr.x, 10);
     qquit(q);
 }
+
+TEST(huge_copy_stays_out_of_the_terminal_clipboard) {
+    /* 17 MB: past the most quip sends the terminal in OSC 52. The copy
+     * still goes to quip's own clipboard, and the status bar says so. */
+    int lines = 170000;
+    char *text = malloc((size_t)lines * 100 + 1);
+    for (int i = 0; i < lines; i++) {
+        memset(text + 100 * i, 'a' + i % 26, 99);
+        text[100 * i + 99] = '\n';
+    }
+    text[(size_t)lines * 100] = '\0';
+    quip *q = qstart("a.txt", text);
+    free(text);
+    qkey(q, K_SHIFT_CTRL_DOWN);
+    qkey(q, K_CTRL_C);
+    CHECK(strstr(qmessage(q), "Copied 16999999 bytes, too many for the terminal's clipboard") !=
+          NULL);
+    CHECK(q->scr.clipboard == NULL);
+    qquit(q);
+}

@@ -1,6 +1,10 @@
 /* Copy and paste: the internal clipboard and the terminal's, through OSC 52. */
 #include "quip.h"
 
+/* The most text a copy sends to the terminal's clipboard. A bigger copy only
+ * goes to quip's own. */
+#define QUIP_OSC52_MAX (16 << 20)
+
 /* Base64, for OSC 52 clipboard reads and writes. */
 
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -110,6 +114,12 @@ void editorCopySelection(void) {
     E.clipboard = text;
     E.clipboard_len = len;
 
+    /* Terminals keep a few megabytes at most, and writing more would hold
+     * quip up for nothing. */
+    if (len > QUIP_OSC52_MAX) {
+        editorSetStatusMessage("Copied %zu bytes, too many for the terminal's clipboard", len);
+        return;
+    }
     char *b64 = b64Encode((unsigned char *)text, len);
     /* ESC ] 52 ; c ; <base64> BEL */
     size_t b64len = strlen(b64), seqlen = 8 + b64len;
