@@ -153,6 +153,8 @@ struct editorConfig {
     int rawmode;    /* Is terminal raw mode enabled? */
     erow *row;      /* Rows */
     int dirty;      /* File modified but not saved. */
+    int crlf;       /* Lines end in CRLF on disk, not LF. */
+    int noeol;      /* The file on disk has no newline at its end. */
     char *filename; /* Currently open filename */
     char statusmsg[80];
     time_t statusmsg_time;

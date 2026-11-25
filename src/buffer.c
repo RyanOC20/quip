@@ -164,7 +164,8 @@ static void editorInsertRow(int at, char *s, size_t len) {
     E.row[at].size = len;
     E.row[at].chars_cap = len + 1;
     E.row[at].chars = malloc(len + 1);
-    memcpy(E.row[at].chars, s, len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
     E.row[at].hl = NULL;
     E.row[at].hl_cap = 0;
     E.row[at].hl_state = HL_ST_INVALID; /* So the rows below get re-lexed. */
@@ -317,34 +318,80 @@ void editorDelChar(void) {
 /* Load the specified program in the editor memory and returns 0 on success
  * or 1 on error. */
 int editorOpen(char *filename) {
-    FILE *fp;
-
     E.dirty = 0;
+    E.crlf = 0;
+    E.noeol = 0;
     free(E.filename);
     size_t fnlen = strlen(filename) + 1;
     E.filename = malloc(fnlen);
     memcpy(E.filename, filename, fnlen);
 
-    fp = fopen(filename, "r");
-    if (!fp) {
-        if (errno != ENOENT) {
-            editorDie("Opening file", errno);
-        }
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) {
+        if (errno != ENOENT) editorDie("Opening file", errno);
         return 1;
     }
-
-    char *line = NULL;
-    size_t linecap = 0;
-    ssize_t linelen;
-    while ((linelen = getline(&line, &linecap, fp)) != -1) {
-        if (linelen && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
-            line[--linelen] = '\0';
-        editorInsertRow(E.numrows, line, linelen);
+    /* The whole file at once: the line endings are known before any line
+     * is made into a row. */
+    struct stat st;
+    size_t cap = (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) ? (size_t)st.st_size + 1 : 65536;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    for (;;) {
+        if (len == cap) buf = realloc(buf, cap *= 2);
+        ssize_t n = read(fd, buf + len, cap - len);
+        if (n == 0) break;
+        if (n == -1) {
+            if (errno == EINTR) continue;
+            editorDie("Reading file", errno);
+        }
+        len += (size_t)n;
     }
-    free(line);
-    fclose(fp);
+    close(fd);
+
+    /* CRLF when most lines end that way. A file saves with the endings it
+     * was opened with, and without a final newline if it had none. */
+    size_t lf = 0, crlf = 0;
+    char *p = buf, *end = buf + len;
+    while ((p = memchr(p, '\n', end - p))) {
+        lf++;
+        if (p > buf && p[-1] == '\r') crlf++;
+        p++;
+    }
+    E.crlf = crlf > lf - crlf;
+    E.noeol = len > 0 && buf[len - 1] != '\n';
+
+    for (p = buf; p < end;) {
+        char *nl = memchr(p, '\n', end - p);
+        size_t linelen = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        if (E.crlf && nl && linelen && p[linelen - 1] == '\r') linelen--;
+        editorInsertRow(E.numrows, p, linelen);
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(buf);
     E.dirty = 0;
     return 0;
+}
+
+/* The text as it goes to disk: like editorRowsToString, but each line ends
+ * the way the file's lines did, and the last one with nothing when the file
+ * had no newline at its end. */
+static char *editorRowsToFile(int *buflen) {
+    if (!E.crlf && !E.noeol) return editorRowsToString(buflen);
+    size_t total = 1;
+    for (int j = 0; j < E.numrows; j++) total += E.row[j].size + 2;
+    char *buf = malloc(total), *p = buf;
+    for (int j = 0; j < E.numrows; j++) {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        if (j == E.numrows - 1 && E.noeol) break;
+        if (E.crlf) *p++ = '\r';
+        *p++ = '\n';
+    }
+    *p = '\0';
+    *buflen = (int)(p - buf);
+    return buf;
 }
 
 /* The file a save writes: 'path', or what it links to, so that the link
@@ -452,7 +499,7 @@ in_place:
 /* Save the current file on disk. Return 0 on success, 1 on error. */
 int editorSave(void) {
     int len, inplace;
-    char *buf = editorRowsToString(&len);
+    char *buf = editorRowsToFile(&len);
     int err = editorWriteFile(E.filename, buf, len, &inplace);
     free(buf);
     if (err) {

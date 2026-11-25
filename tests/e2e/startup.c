@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #include "../keys.h"
@@ -99,4 +100,18 @@ TEST(no_window_size_and_no_answer_assumes_80x24) {
     qresize(q, 20, 60);
     CHECK(strncmp(qrow(q, 19), "a.txt - 1 line", 14) == 0);
     qquit(q);
+}
+
+static void make_subdir(quip *q) { CHECK(mkdir(qpath(q, "sub"), 0755) == 0); }
+
+TEST(opening_a_directory_is_an_error) {
+    const char *const args[] = {"sub", NULL};
+    qopts o = {.argv = args, .no_wait = 1, .setup = make_subdir};
+    quip *q = qstart_opts(NULL, NULL, &o);
+    int st = qwait_exit(q);
+    CHECK(WIFEXITED(st));
+    CHECK_INT(WEXITSTATUS(st), 1);
+    CHECK(!q->scr.alt);
+    CHECK(strstr(qrow(q, 1), "Is a directory") != NULL);
+    qfree(q);
 }

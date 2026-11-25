@@ -389,12 +389,13 @@ void editorRefreshScreen(void) {
     namelen = textFit(name, namelen, 20, &cols);
     int len = snprintf(status, sizeof(status), "%.*s - %d line%s %s", namelen, name, E.numrows,
                        E.numrows == 1 ? "" : "s", E.dirty ? "(modified)" : "");
-    /* The cursor as line:column, both from 1, as compilers print them. */
+    /* The cursor as line:column, both from 1, as compilers print them,
+     * after the selection size and the line endings when they are CRLF. */
+    char sel[32] = "";
     long selchars = editorSelCharCount();
-    int rlen =
-        selchars ? snprintf(rstatus, sizeof(rstatus), "%ld selected  %d:%d", selchars, E.cy + 1,
-                            editorCursorCharCol() + 1)
-                 : snprintf(rstatus, sizeof(rstatus), "%d:%d", E.cy + 1, editorCursorCharCol() + 1);
+    if (selchars) snprintf(sel, sizeof(sel), "%ld selected  ", selchars);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s%s%d:%d", sel, E.crlf ? "CRLF  " : "",
+                        E.cy + 1, editorCursorCharCol() + 1);
     len = textFit(status, len, statuscols, &cols);
     abAppend(&ab, status, len);
     /* Columns, not bytes, decide where the position goes. */

@@ -169,13 +169,6 @@ TEST(typing_utf8_is_saved_intact) {
     qquit(q);
 }
 
-TEST(file_without_final_newline_gains_one) {
-    quip *q = qstart("a.txt", "a\nb");
-    qtype(q, "x");
-    check_saved(q, "a.txt", "xa\nb\n");
-    qquit(q);
-}
-
 TEST(unbound_ctrl_keys_insert_nothing) {
     quip *q = qstart("a.txt", "x\n");
     qkey(q, "\x07"); /* Ctrl-G */
