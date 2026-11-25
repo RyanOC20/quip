@@ -101,6 +101,13 @@
 #define HL_ST(kind, arg) ((kind) | ((arg) << 8))
 #define HL_ST_INVALID    (-1) /* Never highlighted yet; differs from any state. */
 
+/* A keyword with its length and highlight, HL_KEYWORD1 or HL_KEYWORD2. */
+typedef struct hlkeyword {
+    const char *s;
+    int len;
+    int hl;
+} hlkeyword;
+
 /* A comment delimiter of any length; len 0 when the language has none. */
 typedef struct hldelim {
     char *s;
@@ -116,6 +123,11 @@ struct editorSyntax {
     hldelim block_start;
     hldelim block_end;
     int flags;
+    /* The keywords by first byte, built when the language is first used
+     * (hlIndexKeywords): those that start with byte b are kw[kw_first[b]]
+     * up to kw[kw_first[b + 1]], in the order the language lists them. */
+    struct hlkeyword *kw;
+    int *kw_first;
 };
 
 /* This structure represents a single line of the file we are editing. */

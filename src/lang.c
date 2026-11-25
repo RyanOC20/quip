@@ -51,8 +51,16 @@ static char *C_HL_keywords[] = {
 // clang-format on
 
 static struct editorSyntax C_HL_builtin = {
-    "c",       C_HL_extensions, C_HL_filenames, C_HL_keywords,
-    {"//", 2}, {"/*", 2},       {"*/", 2},      HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS,
+    "c",
+    C_HL_extensions,
+    C_HL_filenames,
+    C_HL_keywords,
+    {"//", 2},
+    {"/*", 2},
+    {"*/", 2},
+    HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS,
+    NULL,
+    NULL, /* keyword index, built on first use */
 };
 
 /* Every known language, in match priority order (see above). */
@@ -110,6 +118,8 @@ static void hlFreeSyntax(struct editorSyntax *s) {
     hlListFree(s->extensions);
     hlListFree(s->filenames);
     hlListFree(s->keywords);
+    free(s->kw);
+    free(s->kw_first);
     free(s->line_comment.s);
     free(s->block_start.s);
     free(s->block_end.s);

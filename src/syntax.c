@@ -55,7 +55,8 @@ static int hlCharLiteralLen(const char *p, int n) {
  * 'state' (the state the previous row ended in). Returns the state this
  * row ends in. */
 static int editorHighlightRow(erow *row, int state) {
-    char **keywords = E.syntax->keywords;
+    const hlkeyword *kws = E.syntax->kw;
+    const int *kw_first = E.syntax->kw_first;
     const hldelim *scs = &E.syntax->line_comment;
     const hldelim *mcs = &E.syntax->block_start;
     const hldelim *mce = &E.syntax->block_end;
@@ -238,21 +239,19 @@ static int editorHighlightRow(erow *row, int state) {
         /* Keywords and types: a whole word, so "int" matches in "vector<int>"
          * and "std::string" but not in "print". */
         if (i == 0 || !hlIsWordChar((unsigned char)p[i - 1])) {
-            int j;
-            for (j = 0; keywords[j]; j++) {
-                int klen = strlen(keywords[j]);
-                int kw2 = keywords[j][klen - 1] == '|';
-                if (kw2) klen--;
-
+            /* Only the keywords that start with this byte. */
+            int k = kw_first[c], kend = kw_first[c + 1];
+            for (; k < kend; k++) {
+                const hlkeyword *kw = &kws[k];
                 /* render is NUL terminated, so p[n] ends a word. */
-                if (i + klen <= n && !memcmp(p + i, keywords[j], klen) &&
-                    !hlIsWordChar((unsigned char)p[i + klen])) {
-                    memset(hl + i, kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
-                    i += klen;
+                if (i + kw->len <= n && !memcmp(p + i, kw->s, kw->len) &&
+                    !hlIsWordChar((unsigned char)p[i + kw->len])) {
+                    memset(hl + i, kw->hl, kw->len);
+                    i += kw->len;
                     break;
                 }
             }
-            if (keywords[j] != NULL) continue;
+            if (k < kend) continue;
         }
 
         /* Not special chars */
@@ -306,6 +305,36 @@ int editorSyntaxToColor(int hl) {
 
 /* Select the syntax highlight scheme depending on the filename,
  * setting it in the global state E.syntax (NULL if nothing matches). */
+/* Build the keyword index of 's' (see struct editorSyntax): a counting sort
+ * by first byte, which keeps the listed order within each byte, so the
+ * first listed keyword that matches still wins. A trailing '|' marks a type.
+ * A keyword that is empty without it could never end, so it is left out. */
+static void hlIndexKeywords(struct editorSyntax *s) {
+    int count = 0;
+    while (s->keywords[count]) count++;
+    s->kw = malloc(sizeof(hlkeyword) * (count ? count : 1));
+    s->kw_first = calloc(257, sizeof(int));
+    for (int j = 0; j < count; j++) {
+        size_t len = strlen(s->keywords[j]);
+        if (len && s->keywords[j][len - 1] == '|') len--;
+        if (len) s->kw_first[(unsigned char)s->keywords[j][0] + 1]++;
+    }
+    for (int b = 0; b < 256; b++) s->kw_first[b + 1] += s->kw_first[b];
+    int next[256];
+    memcpy(next, s->kw_first, sizeof(next));
+    for (int j = 0; j < count; j++) {
+        const char *k = s->keywords[j];
+        size_t len = strlen(k);
+        int type = len && k[len - 1] == '|';
+        if (type) len--;
+        if (!len) continue;
+        hlkeyword *e = &s->kw[next[(unsigned char)k[0]]++];
+        e->s = k;
+        e->len = (int)len;
+        e->hl = type ? HL_KEYWORD2 : HL_KEYWORD1;
+    }
+}
+
 void editorSelectSyntaxHighlight(char *filename) {
     const char *base = strrchr(filename, '/');
     base = base ? base + 1 : filename;
@@ -316,15 +345,18 @@ void editorSelectSyntaxHighlight(char *filename) {
         for (int i = 0; s->filenames[i]; i++) {
             if (!strcmp(base, s->filenames[i])) {
                 E.syntax = s;
-                return;
+                goto found;
             }
         }
         for (int i = 0; s->extensions[i]; i++) {
             size_t elen = strlen(s->extensions[i]);
             if (blen > elen && !strcmp(base + blen - elen, s->extensions[i])) {
                 E.syntax = s;
-                return;
+                goto found;
             }
         }
     }
+    return;
+found:
+    if (!E.syntax->kw) hlIndexKeywords(E.syntax);
 }
